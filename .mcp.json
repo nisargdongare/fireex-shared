@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "fireex-shared": {
+      "command": "node",
+      "args": ["/Users/nisarg/Documents/Software_projects/fireex-shared/mcp-server/src/index.js"]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "fireex-shared-mcp",
+  "version": "1.0.0",
+  "description": "MCP server exposing FireEx shared knowledge base as readable resources",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0"
+  }
+}
