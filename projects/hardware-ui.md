@@ -4,11 +4,12 @@
 
 The display UI runs on a dedicated ESP32-S3 MCU inside the FireEx hardware unit. It drives a 5-inch 800×480 capacitive touch display using LVGL v8 over a 40-pin RGB parallel interface. The display shows live sensor data, device status, and active alerts — and provides a PIN-protected technician configuration screen.
 
-**Status:** Not started (as of 2024-10-04)
-**Repo:** TBD
+**Status:** In progress — hardware bring-up complete, full screen set implemented
+**Last updated:** 2026-10-04
+**Repo:** `5inchTFT` (PlatformIO project at `~/Documents/PlatformIO/Projects/5inchTFT`)
 **Platform:** ESP32-S3
 **Framework:** Arduino + PlatformIO
-**Language:** C (with minimal C++)
+**Language:** C++ (primary), C (HAL layer)
 **Display library:** LVGL v8.x
 
 ---
@@ -21,49 +22,90 @@ The display UI runs on a dedicated ESP32-S3 MCU inside the FireEx hardware unit.
 | Flash | 16MB (N16 variant) |
 | PSRAM | 8MB (R8 variant) |
 | Display | SmartElex 5" 800×480, capacitive touch, **40-pin RGB header** (NOT FPC connector) |
-| Touch | Capacitive touch controller over I2C (confirmed; exact IC TBD — likely GT911) |
+| Touch | **GT911** capacitive touch controller over I2C — confirmed, bring-up complete |
 | Display interface | RGB parallel, 40-pin header directly on PCB |
-| LVGL frame buffer | PSRAM-backed double buffer (8MB PSRAM provides ample space for 800×480×2 buffers) |
-| Communication | UART to firmware ESP32 (Serial1 at 115200 baud) |
+| LVGL frame buffer | Two partial draw buffers (48 lines × 800px each) in internal SRAM (DMA-capable); RGB panel framebuffer lives in PSRAM, driven by ESP32-S3 RGB LCD peripheral |
+| Communication | UART to firmware ESP32 (GPIO4=TX, GPIO5=RX, 115200 baud) — pin-mapped, protocol not yet wired |
 
 > **Important:** This display uses a **40-pin RGB parallel header** soldered directly to the PCB, not an FPC ribbon connector. Do not reference FPC in firmware or hardware docs.
 
-### Pin Assignments (TBD — finalize with hardware schematic)
-- RGB pins: 16 data bits (R[4:0], G[5:0], B[4:0]) + HSYNC, VSYNC, PCLK, DE — via 40-pin header
-- Touch I2C: SDA, SCL (confirmed I2C, touch IC to be verified as GT911)
-- UART to firmware: TX (GPIO17), RX (GPIO18)
+> **Hardware mod — DISP pin:** DISP was originally hardwired HIGH via pull-up (no GPIO control). The ST7265 datasheet requires DISP LOW through reset and only HIGH after RGB timing is running. Pull-up was lifted and bodge-wired to **GPIO6**. Code sequences DISP low → start panel → push first LVGL frame → DISP high → 120ms stabilization → backlight on.
+
+> **Backlight polarity:** Active-LOW (inverting stage ahead of boost converter). GPIO40, LEDC channel 0. 100% brightness = duty 0.
+
+### Confirmed Pin Assignments
+| Signal | GPIO |
+|--------|------|
+| B3–B7 | 3, 20, 19, 8, 18 |
+| G2–G7 | 39, 38, 11, 12, 9, 10 |
+| R3–R7 | 13, 14, 21, 47, 48 |
+| PCLK | 17 |
+| VSYNC | 15 |
+| HSYNC | 16 |
+| DE | 7 |
+| DISP | 6 (bodge-wired) |
+| Backlight | 40 (active-LOW) |
+| Status LED | 46 |
+| Touch SDA | 2 |
+| Touch SCL | 42 |
+| Touch INT | 1 |
+| Touch RST | 41 |
+| UART TX (to firmware) | 4 |
+| UART RX (from firmware) | 5 |
+
+GT911 I2C address: **0x5D** (latched by holding INT low during reset sequence).
 
 ---
 
-## Project Structure (PlatformIO)
+## Project Structure (PlatformIO) — Actual
+
+> **Note:** The original planned structure has been superseded by the actual implementation below.
 
 ```
-fireex-ui/
+5inchTFT/
   platformio.ini
   src/
-    main.cpp                  ← Setup + loop
-    config.h                  ← Display constants (width, height, etc.)
-    hal/
-      display_driver.c/.h     ← Low-level RGB LCD driver
-      touch_driver.c/.h       ← Touch controller driver (FT5x06/GT911)
-    lvgl_port/
-      lvgl_init.c/.h          ← LVGL init, tick, flush callback
-    screens/
-      screen_main.c/.h        ← Main status screen
-      screen_alert.c/.h       ← Alert banner / full-screen alert
-      screen_technician.c/.h  ← PIN entry + technician menu
-      screen_settings.c/.h    ← Device settings (read-only display)
-    widgets/
-      sensor_gauge.c/.h       ← Reusable gauge widget
-      status_bar.c/.h         ← Top status bar (WiFi, time, battery)
-    comms/
-      uart_receiver.c/.h      ← Receive state updates from firmware MCU
-      uart_sender.c/.h        ← Send technician actions to firmware MCU
-    storage/
-      nvs_pin.c/.h            ← Store technician PIN in NVS
-  assets/
-    fonts/                    ← LVGL font files (.c)
-    images/                   ← LVGL image files (.c)
+    main_esp32.cpp            ← Setup + loop (hardware init, LVGL glue, GT911 touch)
+    ui.cpp / ui.h             ← build_ui() entry point
+    hw.h                      ← hw_backlight_set() declaration
+    ui/
+      model.h / model.cpp     ← FireExModel g_model (live state mirrored from firmware MCU)
+      screen_manager.h/.cpp   ← ScreenManager g_screen_mgr (create-on-enter / destroy-on-leave)
+      session.h/.cpp          ← Technician session (PIN auth, auto-logout timer)
+      theme.h/.cpp            ← LVGL theme / colour tokens
+      screens/
+        scr_startup.cpp/.h    ← Boot splash (auto-advances to Home)
+        scr_home.cpp/.h       ← Main status screen
+        scr_alarm.cpp/.h      ← Full-screen alarm overlay (Alert / Panic states)
+        scr_pin.cpp/.h        ← PIN entry + lockout + first-run sub-states
+        scr_menu.cpp/.h       ← Technician menu (tile grid)
+        scr_alarm_levels.cpp/.h   ← Alert/Panic threshold settings
+        scr_alarm_log.cpp/.h      ← Recent alarm history
+        scr_exhaust_speed.cpp/.h  ← Exhaust fan speed setting
+        scr_fan_control.cpp/.h    ← Manual fan control
+        scr_outputs.cpp/.h        ← Output states (tubelight, buzzer, exhaust, sprinkler)
+        scr_sprinkler.cpp/.h      ← Sprinkler arm/fire/reset
+        scr_unlock_knob.cpp/.h    ← Sprinkler unlock knob sequence UI
+        scr_sensors.cpp/.h        ← Raw sensor readings + thresholds
+        scr_battery.cpp/.h        ← Battery status
+        scr_network.cpp/.h        ← Network overview (WiFi/GSM/BLE)
+        scr_wifi.cpp/.h           ← WiFi settings
+        scr_gsm.cpp/.h            ← GSM settings
+        scr_ble.cpp/.h            ← BLE settings
+        scr_display.cpp/.h        ← Display/brightness settings
+        scr_maintenance.cpp/.h    ← Maintenance mode (enter code, send to firmware)
+        scr_stepper.cpp/.h        ← Radar stepper motor position
+        scr_test_mode.cpp/.h      ← Test alarm
+        scr_change_pin.cpp/.h     ← Change technician PIN
+        scr_factory_reset.cpp/.h  ← Factory reset (PIN-gated)
+        scr_about.cpp/.h          ← Device info (FW/UI versions, MAC, device ID)
+        scr_placeholder.cpp/.h    ← Generic "Coming soon" for unbuilt screens
+      widgets/
+        status_bar.cpp/.h     ← Top bar (WiFi%, GSM%, BLE dot, battery%, time)
+        keypad.cpp/.h         ← Reusable numeric keypad widget (used by PIN + maintenance screens)
+        onoff_toggle.cpp/.h   ← Labelled on/off toggle widget
+        toast.cpp/.h          ← Transient toast notification widget
+        value_stepper.cpp/.h  ← +/- stepper for numeric settings
   lv_conf.h                   ← LVGL configuration
 ```
 
@@ -71,140 +113,123 @@ fireex-ui/
 
 ## Screen Descriptions
 
-### Main Status Screen (`screen_main`)
+> All screens below are **implemented** (files exist in `src/ui/screens/`). Screen navigation uses `ScreenManager::navigate_to(ScreenId)` with create-on-enter / destroy-on-leave lifecycle.
 
-The default screen, always visible during normal operation.
-
-**Layout (800×480):**
-```
-┌──────────────────────────────────────────────┐
-│  [WiFi icon] [Time: 14:32]       [Battery: 95%] │  ← Status bar (40px)
-├──────────────────────────────────────────────┤
-│  DEVICE: FX-0042   ROOM: Server Room 3B       │  ← Device info (50px)
-├──────────────────────────────────────────────┤
-│                                              │
-│  🔴 SMOKE    🟢 CO      🟡 TEMP    🟢 HUM    │  ← Sensor status icons
-│   0.12        8.4 ppm   23.5°C    52%RH     │  ← Values
-│  ▓░░░░░░░  ▓░░░░░░░   ▓░░░░░░░  ▓░░░░░░░  │  ← Progress bars
-│                                              │
-│  STATUS: ● ONLINE                            │
-│  Last sync: 14:31:58                         │
-│                                              │
-│                        [⚙ TECH ACCESS]       │  ← Bottom right button
-└──────────────────────────────────────────────┘
-```
-
-- Sensor values update in real-time from UART state messages
-- Sensor icon color: green (normal), yellow (approaching threshold), red (exceeded)
-- Status indicator: green dot (online), red dot (alarm), grey dot (offline)
-- Bottom-right button opens PIN entry screen
+### Startup (`scr_startup`) — ✅ Built
+Boot splash. Auto-advances to Home after a fixed duration. Never navigable to directly via `navigate_to()`.
 
 ---
 
-### Alert Screen (`screen_alert`)
-
-Shown as an overlay when an alarm is active. Replaces the main screen with a full-screen red alert.
-
-**Layout:**
-```
-┌──────────────────────────────────────────────┐
-│              ⚠ FIRE ALARM ⚠                  │  ← Flashing red background
-│                                              │
-│          SMOKE DETECTED                      │
-│                                              │
-│       Level: 0.87  (threshold: 0.50)         │
-│                                              │
-│       Location: Server Room 3B               │
-│       Time: 14:32:15                         │
-│                                              │
-│    [🔇 SILENCE LOCAL ALARM]                  │  ← Button (does not resolve)
-│                                              │
-│    Backend notified. Help is on the way.     │
-└──────────────────────────────────────────────┘
-```
-
-- Background pulses red
-- Buzzer control: "Silence Local Alarm" button sends `silence_request` to firmware MCU via UART
-- Screen returns to main screen when alarm is resolved (firmware sends `alarm: false` in state update)
+### Home / Main Status Screen (`scr_home`) — ✅ Built
+Default screen during normal operation.
+- Status bar widget across the top: WiFi %, GSM %, BLE dot, battery %, time
+- Sensor tiles: Smoke %, Temp °C, Humidity %RH, Radar presence indicator
+- Alarm level badge driven from `g_model.alarm_level`
+- Bottom-right "TECH ACCESS" button → `scr_pin`
+- `g_model.link_ok()` drives a "no link" indicator (Milestone 1: always true)
 
 ---
 
-### Technician Access: PIN Entry Screen (`screen_technician`)
-
-Accessed via the "Tech Access" button on the main screen.
-
-**PIN Entry Layout:**
-```
-┌──────────────────────────────────────────────┐
-│              TECHNICIAN ACCESS               │
-│                                              │
-│         Enter 6-digit PIN:                   │
-│                                              │
-│              [_ _ _ _ _ _]                   │
-│                                              │
-│   [1][2][3]                                  │
-│   [4][5][6]                                  │
-│   [7][8][9]                                  │
-│   [←][0][✓]                                  │
-│                                              │
-│         [CANCEL]                             │
-└──────────────────────────────────────────────┘
-```
-
-- 3 failed PIN attempts → 5-minute lockout (stored in RAM, resets on reboot)
-- Default PIN: `000000` (changed on first technician login — TBD whether this is done here or via backend)
-- Correct PIN → navigate to Technician Menu Screen
+### Alarm Screen (`scr_alarm`) — ✅ Built
+Full-screen overlay, appears whenever `g_model.alarm_level` is `Alert` or `Panic`.
+- `ScreenManager::on_alarm_level_changed()` forces navigation to/from this screen regardless of what is currently open (closes technician menus, drops unsaved changes).
+- Background color and pulsing reflect severity (Alert = amber, Panic = red).
+- "Silence" button → sends `silence_request` via UART to firmware.
+- Returns to Home automatically when alarm clears back to Normal.
 
 ---
 
-### Technician Menu Screen
+### PIN Entry (`scr_pin`) — ✅ Built
+Three sub-states managed within the screen (no navigate_to() for sub-states):
+- **Enter PIN** — 6-digit keypad entry
+- **Lockout** — shown after 3 failed attempts; 5-minute cooldown (RAM, resets on reboot)
+- **First Run** — prompts new PIN on first boot (default PIN `000000`)
 
-Available only after correct PIN entry.
-
-```
-┌──────────────────────────────────────────────┐
-│  TECHNICIAN MENU          [← EXIT]           │
-│                                              │
-│  [TEST ALARM]         [SILENCE ALARM]        │
-│                                              │
-│  [VIEW SENSOR DETAILS]                       │
-│                                              │
-│  [DEVICE INFO]                               │
-│   FW: 1.2.3  UI: 1.0.1                      │
-│   Device ID: FX-0042                         │
-│   MAC: AA:BB:CC:DD:EE:FF                     │
-│                                              │
-│  [CHANGE PIN]                                │
-│                                              │
-│  Auto-exit in: 5:00                          │  ← Countdown timer
-└──────────────────────────────────────────────┘
-```
-
-- Auto-exit after 5 minutes of inactivity (returns to main screen, PIN required again)
-- "Test Alarm" sends `test_alarm_request` to firmware MCU via UART
-- "Silence Alarm" sends `silence_request` to firmware MCU
+`navigate_to_pin(on_success_cb)` variant used by sprinkler reset and factory reset to PIN-gate individual actions without routing through the Menu.
 
 ---
 
-### Sensor Details Screen
+### Technician Menu (`scr_menu`) — ✅ Built
+Tile grid; available only after successful PIN. Auto-exits on inactivity (session timer in `ui/session.cpp`). Tiles navigate to:
 
-Accessible from Technician Menu. Shows raw sensor readings and allows threshold review.
+| Tile | Screen |
+|------|--------|
+| Alarm Levels | `scr_alarm_levels` |
+| Fan Control | `scr_fan_control` |
+| Exhaust Speed | `scr_exhaust_speed` |
+| Outputs | `scr_outputs` |
+| Sprinkler | `scr_sprinkler` |
+| Sensors | `scr_sensors` |
+| Battery | `scr_battery` |
+| Network | `scr_network` |
+| Display | `scr_display` |
+| Maintenance | `scr_maintenance` |
+| Stepper | `scr_stepper` |
+| Test Mode | `scr_test_mode` |
+| Alarm Log | `scr_alarm_log` |
+| Change PIN | `scr_change_pin` |
+| Factory Reset | `scr_factory_reset` |
+| About | `scr_about` |
+| Unbuilt tiles | `scr_placeholder` |
 
-```
-┌──────────────────────────────────────────────┐
-│  SENSOR DETAILS              [← BACK]        │
-│                                              │
-│  Smoke Level:    0.12   Threshold: 0.50      │
-│  CO (PPM):        8.4   Threshold: 50.0      │
-│  Temperature:   23.5°C  Threshold: 60.0°C   │
-│  Humidity:      52.0%   Threshold: 80.0%    │
-│                                              │
-│  WiFi RSSI:    -65 dBm                       │
-│  Uptime:       2d 4h 12m                     │
-│  MQTT:         Connected                     │
-│  Last sync:    14:31:58                      │
-└──────────────────────────────────────────────┘
-```
+---
+
+### Alarm Levels (`scr_alarm_levels`) — ✅ Built
+Edit `alert_level_pct`, `panic_level_pct`, `clear_delay_s`. Uses `value_stepper` widget.
+
+### Exhaust Speed (`scr_exhaust_speed`) — ✅ Built
+Set `alert_fan_pct`, `panic_fan_mains_pct`, `panic_fan_batt_pct`.
+
+### Outputs (`scr_outputs`) — ✅ Built
+Toggle `tubelight_on`, `buzzer_output_on`, `exhaust_output_on`, `sprinkler_armed`. Uses `onoff_toggle` widget.
+
+### Sprinkler (`scr_sprinkler`) — ✅ Built
+Arm/fire/reset controls. Sprinkler reset is PIN-gated via `navigate_to_pin()`. Shows `sprinkler_fired` state.
+
+### Unlock Knob (`scr_unlock_knob`) — ✅ Built
+Step-by-step UI guide for the physical unlock knob sequence before sprinkler can fire.
+
+### Sensors (`scr_sensors`) — ✅ Built
+Raw sensor values: smoke %, temp °C, humidity %RH, radar position, `sensor_raw_temp_c`. Thresholds from `g_model.settings`.
+
+### Battery (`scr_battery`) — ✅ Built
+`battery_pct_f`, `battery_voltage`, `on_mains`, `battery_charging`, `low_battery_pct` setting.
+
+### Network (`scr_network`) — ✅ Built
+Overview: WiFi %, GSM %, BLE connected. Sub-screens: `scr_wifi`, `scr_gsm`, `scr_ble`.
+
+### WiFi (`scr_wifi`) / GSM (`scr_gsm`) / BLE (`scr_ble`) — ✅ Built
+Per-radio status and on/off toggle (`wifi_on`, `gsm_on`, `ble_on`).
+
+### Display (`scr_display`) — ✅ Built
+`brightness_pct` (via `hw_backlight_set()`), `dim_after_s`, `screen_off_min`.
+
+### Maintenance (`scr_maintenance`) — ✅ Built
+Technician enters a 6-digit maintenance code via the `keypad` widget.
+- Sends `{"t":"maintenance_code","code":"XXXXXX"}` to firmware via UART.
+- Firmware replies `{"t":"maintenance_code_result","accepted":true/false}`.
+- On accepted: device enters maintenance mode; backend notified via MQTT; mobile app TicketDetailScreen transitions to "Confirmed".
+
+### Stepper (`scr_stepper`) — ✅ Built
+Shows current radar stepper position (A/B/C/D). Allows manual override for diagnostics.
+
+### Test Mode (`scr_test_mode`) — ✅ Built
+Sends `test_alarm_request` to firmware. Shows buzzer/LED response.
+
+### Alarm Log (`scr_alarm_log`) — ✅ Built
+Scrollable list of recent alarm events (data from `g_model`).
+
+### Change PIN (`scr_change_pin`) — ✅ Built
+Old PIN → new PIN → confirm. Stores in NVS.
+
+### Factory Reset (`scr_factory_reset`) — ✅ Built
+PIN-gated via `navigate_to_pin()`. Clears NVS config and reboots.
+
+### About (`scr_about`) — ✅ Built
+FW version, UI version, device code, MAC address, uptime, service due info.
+
+### Placeholder (`scr_placeholder`) — ✅ Built
+Generic "Coming soon" screen for any tile not yet wired to a real screen. Called via `navigate_to_placeholder(title)`.
 
 ---
 
@@ -223,45 +248,52 @@ Key settings:
 
 ---
 
-## LVGL Display Flush (RGB Panel)
+## LVGL Display Flush (RGB Panel) — Actual Implementation
 
-The ESP32-S3 has a built-in RGB LCD peripheral. The flush callback writes the LVGL buffer directly to the LCD frame buffer in PSRAM. Uses DMA for non-blocking refresh.
+Uses `esp_lcd_panel_draw_bitmap()` with `disp_drv.full_refresh = 1`. Two draw buffers (48 lines × 800 px each) allocated with `MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL`. The RGB panel's own full framebuffer lives in PSRAM (managed by the ESP-IDF RGB LCD peripheral, not by LVGL).
 
-```c
-void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p) {
-    // Write to PSRAM-backed framebuffer at (area->x1, area->y1)
-    // Signal LVGL flush complete immediately (DMA handles the rest)
+```cpp
+static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p) {
+    esp_lcd_panel_draw_bitmap(panel_handle, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_p);
     lv_disp_flush_ready(drv);
 }
 ```
+
+LVGL tick: `lv_timer_handler()` called every 5ms in `loop()`. No separate 1ms ISR in current implementation.
 
 ---
 
 ## UART Communication with Firmware MCU
 
-See `projects/hardware-firmware.md` for full protocol. Summary:
+**Status (Milestone 1):** GPIO pins reserved (TX=GPIO4, RX=GPIO5) but UART protocol not wired yet. `g_model` uses hardcoded defaults. See `projects/hardware-firmware.md` for the full protocol.
 
-**Receive (from firmware, every 1 second):**
+**Planned receive (from firmware, every 1 second):**
 ```json
-{"t":"state","smoke":0.12,"co":8.4,"temp":23.5,"hum":52.0,"status":"online","alarm":false}
+{"t":"state","smoke":0.12,"temp":23.5,"hum":52.0,"status":"online","alarm":false,"fan_pct":0}
 ```
 
-Parse and update LVGL label values and gauge values directly from `uart_receiver.c`.
-
-**Send (to firmware, on user action):**
+**Planned send (from UI to firmware, on user action):**
 ```json
 {"t":"silence_request"}
 {"t":"test_alarm_request"}
-{"t":"pin_ok","pin":"123456"}
+{"t":"maintenance_code","code":"482193"}
 ```
+
+**Planned receive response (firmware → UI):**
+```json
+{"t":"maintenance_code_result","accepted":true}
+```
+
+Note: `co` field removed from state updates — CO sensor not present in hardware (MQ2 covers smoke only). See `data-models/devices.md`.
 
 ---
 
-## Key Implementation Notes
+## Key Implementation Notes — Actual
 
-- LVGL tick must be called every 1ms — use `esp_timer_create` with a 1ms periodic ISR
-- All LVGL UI updates must happen from the main task (not from UART receive ISR) — use a queue to pass parsed state from UART ISR to main task
-- Sensor gauge colors: green (< 50% of threshold), yellow (50–80% of threshold), red (> 80% of threshold)
-- Font choice: Montserrat (bundled with LVGL) — generate only needed glyphs to save flash
-- Screen brightness: fixed at 80% via PWM on backlight pin (configurable TBD)
-- Touch calibration: run once on first boot, store calibration matrix in NVS
+- **Loop timing:** `lv_timer_handler()` + 5ms `delay()` in Arduino `loop()`. Simple; revisit if UI responsiveness needs improvement.
+- **Screen lifecycle:** create-on-enter, destroy-on-leave. Only one screen's widgets live at a time.
+- **Model updates:** All `g_model` field updates happen in the main loop task before calling `lv_timer_handler()`. Once UART is wired, parsed frames will update `g_model` fields in the main task (not from ISR).
+- **Screen brightness:** Configurable via `g_model.settings.brightness_pct` → `hw_backlight_set()`. Default 80%. LEDC channel 0, active-LOW on GPIO40.
+- **Alarm pre-emption:** `ScreenManager::on_alarm_level_changed()` immediately navigates to/from `scr_alarm`, overriding any open screen.
+- **PIN storage:** NVS, via `scr_change_pin` and `scr_factory_reset` flows.
+- **Technician session auto-exit:** Session timer in `ui/session.cpp` navigates back to Home on inactivity.

@@ -1,12 +1,12 @@
 # FireEx Project Status
 
-Last updated: 2024-10-04
+Last updated: 2026-10-04
 
 ---
 
-## System-wide Status: PRE-DEVELOPMENT
+## System-wide Status: IN DEVELOPMENT
 
-All sub-projects are in planning/design phase. No code has been written yet. This document records the current state and what needs to happen next.
+`fireex-ui` (Display UI) is in active development with hardware bring-up complete and full screen set implemented. All other sub-projects remain in planning/design phase.
 
 ---
 
@@ -111,26 +111,32 @@ All sub-projects are in planning/design phase. No code has been written yet. Thi
 ---
 
 ### `fireex-ui` (ESP32-S3 Display UI)
-**Status:** Not started
-**Repo:** Not created
+**Status:** In progress
+**Repo:** `5inchTFT` (PlatformIO, `~/Documents/PlatformIO/Projects/5inchTFT`)
 
 **What's done:**
-- Screen designs and LVGL architecture documented (`projects/hardware-ui.md`)
-- UART protocol with firmware MCU defined
+- ✅ Hardware bring-up complete: RGB LCD (ST7265, 800×480), GT911 touch, LVGL 8 stack
+- ✅ Pin assignments confirmed and documented (`projects/hardware-ui.md`)
+- ✅ DISP hardware mod documented (bodge-wire to GPIO6, active-LOW backlight)
+- ✅ All 25+ screens implemented (`src/ui/screens/`)
+- ✅ Screen manager (create-on-enter/destroy-on-leave), session management, theming
+- ✅ Full model (`FireExModel g_model`) with all sensor, alarm, actuator, settings fields
+- ✅ Widgets: status bar, keypad, on/off toggle, toast, value stepper
+- ✅ PIN entry with lockout and first-run flow; NVS PIN storage
+- ✅ Alarm pre-emption (Alert/Panic forces `scr_alarm` over any open screen)
+- ✅ Sprinkler/factory-reset PIN-gating via `navigate_to_pin(callback)`
+- ✅ Maintenance code entry + UART request/response flow designed
 
 **Next steps:**
-1. Create repo `fireex-ui`
-2. Initialize PlatformIO project for ESP32-S3
-3. Set up LVGL with RGB LCD driver
-4. Set up capacitive touch driver
-5. Implement main status screen with live sensor values
-6. Implement UART receive from firmware MCU
-7. Implement alarm/alert screen
+1. Wire UART receive from firmware MCU → update `g_model` fields live
+2. Wire UART send for: `silence_request`, `test_alarm_request`, `maintenance_code`
+3. Implement `g_model.link_ok()` using 3s frame timeout
+4. Test alarm pre-emption end-to-end with real firmware
+5. Test PIN lockout, session auto-exit, factory reset flow on device
 
 **Blockers:**
-- Display panel model not finalized (affects touch driver choice: FT5x06 or GT911)
-- Hardware schematic not finalized (RGB pin assignments)
-- Physical hardware units not yet available for testing
+- Firmware MCU (`fireex-firmware`) not started — UART integration depends on it
+- UART protocol has a minor mismatch: shared docs include `co` field in state frame, but hardware has no CO sensor (MQ2 only). Shared docs updated to remove it.
 
 ---
 
@@ -141,9 +147,9 @@ All sub-projects are in planning/design phase. No code has been written yet. Thi
 | MQTT broker selection | Backend + firmware setup | TBD | TBD |
 | Cloud hosting | Backend deployment | TBD | TBD |
 | SMS provider | OTP in production | TBD | TBD |
-| CO sensor model | Firmware sensor config | Hardware team | TBD |
-| Smoke sensor model | Firmware sensor config | Hardware team | TBD |
-| Display panel model | UI touch driver | Hardware team | TBD |
+| CO sensor model | Firmware sensor config | Hardware team | **Resolved: no separate CO sensor; MQ2 covers smoke + combustibles** |
+| Smoke sensor model | Firmware sensor config | Hardware team | **Resolved: MQ2** |
+| Display panel model | UI touch driver | Hardware team | **Resolved: ST7265 + GT911, 800×480 RGB, 40-pin header** |
 | WiFi provisioning approach | Firmware onboarding UX | TBD | TBD |
 
 ---
