@@ -1,8 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative, extname } from "node:path";
+import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
+import { join, relative, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
+import { z } from "zod";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const REPO_ROOT = join(__dirname, "..", "..");
@@ -103,6 +105,98 @@ server.registerPrompt(
     };
   }
 );
+
+// ── Write tools ──────────────────────────────────────────────────────────────
+
+// Allowed paths: only markdown files inside the scanned directories
+function isAllowedPath(relPath) {
+  const normalized = relPath.replace(/\\/g, "/").replace(/^\//, "");
+  const inScanDir = SCAN_DIRS.some((d) =>
+    d === "." ? !normalized.includes("/") : normalized.startsWith(d + "/")
+  );
+  return inScanDir && normalized.endsWith(".md");
+}
+
+server.tool(
+  "update_file",
+  "Write new content to a fireex-shared markdown file. Use this to update specs, data models, API contracts, or any other shared documentation after a decision is made in a sub-project session.",
+  {
+    path: z.string().describe("Repo-relative path, e.g. 'projects/hardware-ui.md'"),
+    content: z.string().describe("Full new content of the file (replaces existing content)"),
+  },
+  async ({ path: relPath, content }) => {
+    if (!isAllowedPath(relPath)) {
+      return {
+        content: [{ type: "text", text: `Error: '${relPath}' is not an allowed path. Must be a .md file inside one of: ${SCAN_DIRS.join(", ")}` }],
+        isError: true,
+      };
+    }
+    const absPath = join(REPO_ROOT, relPath);
+    await mkdir(dirname(absPath), { recursive: true });
+    await writeFile(absPath, content, "utf-8");
+    return {
+      content: [{ type: "text", text: `Updated: ${relPath}` }],
+    };
+  }
+);
+
+server.tool(
+  "read_file",
+  "Read the current content of a fireex-shared markdown file. Use this before updating a file so you can make targeted edits rather than replacing the whole thing.",
+  {
+    path: z.string().describe("Repo-relative path, e.g. 'projects/hardware-ui.md'"),
+  },
+  async ({ path: relPath }) => {
+    if (!isAllowedPath(relPath)) {
+      return {
+        content: [{ type: "text", text: `Error: '${relPath}' is not an allowed path.` }],
+        isError: true,
+      };
+    }
+    const absPath = join(REPO_ROOT, relPath);
+    const text = await readFile(absPath, "utf-8").catch(() => null);
+    if (text === null) {
+      return { content: [{ type: "text", text: `File not found: ${relPath}` }], isError: true };
+    }
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+server.tool(
+  "list_files",
+  "List all markdown files currently tracked in the fireex-shared knowledge base.",
+  {},
+  async () => {
+    const files = await collectMarkdownFiles();
+    const list = files.map((f) => f.relPath).join("\n");
+    return { content: [{ type: "text", text: list }] };
+  }
+);
+
+server.tool(
+  "git_commit",
+  "Stage all changes in fireex-shared and create a git commit. Call this after one or more update_file calls to persist the changes with a meaningful message.",
+  {
+    message: z.string().describe("Commit message describing what changed and why"),
+  },
+  async ({ message }) => {
+    try {
+      const safeMessage = message.replace(/"/g, '\\"');
+      execSync(`git -C "${REPO_ROOT}" add -A`, { stdio: "pipe" });
+      const result = execSync(`git -C "${REPO_ROOT}" commit -m "${safeMessage}"`, { stdio: "pipe" });
+      return { content: [{ type: "text", text: result.toString().trim() }] };
+    } catch (err) {
+      const msg = err.stdout?.toString().trim() || err.message;
+      // "nothing to commit" is not a real error
+      if (msg.includes("nothing to commit")) {
+        return { content: [{ type: "text", text: "Nothing to commit — working tree clean." }] };
+      }
+      return { content: [{ type: "text", text: `Git error: ${msg}` }], isError: true };
+    }
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Dynamically register all markdown files as resources
 const markdownFiles = await collectMarkdownFiles();
