@@ -174,12 +174,40 @@ server.tool(
 );
 
 server.tool(
+  "preview_commit",
+  "Show a diff of all pending changes in fireex-shared WITHOUT committing. Always call this before git_commit so the user can review and confirm what will be saved.",
+  {},
+  async () => {
+    try {
+      execSync(`git -C "${REPO_ROOT}" add -A`, { stdio: "pipe" });
+      const diff = execSync(`git -C "${REPO_ROOT}" diff --cached --stat`, { stdio: "pipe" }).toString().trim();
+      if (!diff) {
+        return { content: [{ type: "text", text: "No changes staged — working tree is clean." }] };
+      }
+      const fullDiff = execSync(`git -C "${REPO_ROOT}" diff --cached`, { stdio: "pipe" }).toString().trim();
+      return {
+        content: [{ type: "text", text: `Pending changes:\n\n${diff}\n\n---\n\n${fullDiff}\n\n---\nReview the above and confirm before calling git_commit.` }],
+      };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Git error: ${err.message}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "git_commit",
-  "Stage all changes in fireex-shared and create a git commit. Call this after one or more update_file calls to persist the changes with a meaningful message.",
+  "Commit all staged changes in fireex-shared. MUST call preview_commit first and get explicit user confirmation before calling this.",
   {
     message: z.string().describe("Commit message describing what changed and why"),
+    confirmed: z.boolean().describe("Set to true only after the user has reviewed preview_commit output and explicitly said yes/confirmed"),
   },
-  async ({ message }) => {
+  async ({ message, confirmed }) => {
+    if (!confirmed) {
+      return {
+        content: [{ type: "text", text: "Blocked: call preview_commit first and get explicit user confirmation, then call git_commit with confirmed=true." }],
+        isError: true,
+      };
+    }
     try {
       const safeMessage = message.replace(/"/g, '\\"');
       execSync(`git -C "${REPO_ROOT}" add -A`, { stdio: "pipe" });
@@ -187,7 +215,6 @@ server.tool(
       return { content: [{ type: "text", text: result.toString().trim() }] };
     } catch (err) {
       const msg = err.stdout?.toString().trim() || err.message;
-      // "nothing to commit" is not a real error
       if (msg.includes("nothing to commit")) {
         return { content: [{ type: "text", text: "Nothing to commit — working tree clean." }] };
       }
