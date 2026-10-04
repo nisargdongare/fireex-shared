@@ -4,9 +4,9 @@
 
 The firmware running on the ESP32 MCU inside each FireEx hardware unit. Responsible for reading sensors, controlling actuators, communicating with the backend via MQTT, and operating safely in isolation when the network is unavailable.
 
-**Status:** Not started (as of 2024-10-04)
-**Repo:** TBD
-**Platform:** ESP32 (Xtensa LX6 dual-core, 240MHz)
+**Status:** In progress (as of 2026-10-04)
+**Repo:** `~/Documents/PlatformIO/Projects/fireex-firmware`
+**Platform:** ESP32-S3-WROOM-1 N16R8 (dual-core, 240MHz, 16MB flash, 8MB PSRAM) — both master and slave
 **Framework:** Arduino + PlatformIO
 **Language:** C/C++
 
@@ -18,10 +18,10 @@ The firmware running on the ESP32 MCU inside each FireEx hardware unit. Responsi
 | Sensor | Model | Interface | Notes |
 |--------|-------|-----------|-------|
 | Smoke | MQ2 | Analog (ADC) | Reading normalized 0.0–1.0; detects smoke, LPG, CO |
-| Temperature + Humidity | DHT11 | Digital (1-Wire) | Combined sensor, 1 GPIO |
-| Motion/Presence | Microwave radar | GPIO (digital out) | Swept by stepper motor to positions A/B/C/D |
+| Temperature + Humidity | DHT22 | Digital (1-Wire) | Combined sensor, 1 GPIO — **DHT22 confirmed in firmware, not DHT11** |
+| Motion/Presence | HLK-LD2410B radar | UART (256000 baud) | Swept by stepper motor to positions A/B/C/D |
 
-> **Note:** CO sensor removed — MQ2 covers smoke and combustible gases. DHT11 (not DHT22) confirmed from hardware design.
+> **Note:** CO sensor removed — MQ2 covers smoke and combustible gases. **DHT22 confirmed from firmware code** (shared docs previously said DHT11 — that was wrong).
 
 ### Microwave Radar — Stepper Motor Positions
 The radar module sweeps a stepper motor through 4 positions to provide directional presence coverage:
@@ -36,7 +36,7 @@ The radar module sweeps a stepper motor through 4 positions to provide direction
 | Actuator | Interface | Notes |
 |----------|-----------|-------|
 | Buzzer | GPIO (PWM) | Variable frequency for different alarm tones |
-| Exhaust fan | GPIO (relay) | Smoke venting; controllable from mobile app |
+| Exhaust fan | GPIO (PWM/ESC) | Brushless motor via ESC, LEDC ch2, 50Hz RC signal; controllable from mobile app |
 | Water sprinkler (one-shot) | Solenoid valve + GPIO | **Critical sequence:** unlock knob → open pin-driven door lock → trigger solenoid. ONE-SHOT — cannot be reset by firmware alone. Requires technician visit to reset |
 | Emergency tubelight | GPIO (relay) | Emergency lighting, activates on alarm |
 | LED Red | GPIO | Alarm / error indicator |
@@ -50,27 +50,42 @@ The radar module sweeps a stepper motor through 4 positions to provide direction
 | WiFi | Primary MQTT to backend |
 | BLE | Device pairing during installation (technician app scans and pairs) |
 | GSM module | Cellular backup when WiFi is unavailable; sends SMS alert fallback |
-| UART (Serial2) | Communication with Display UI (ESP32-S3) |
+| UART1 (HardwareSerial(1)) | Communication with Display UI (ESP32-S3); TX=GPIO11, RX=GPIO12 on master |
 | USB Serial (Serial0) | Programming and provisioning |
 
-### Pin Assignments (TBD — finalize with hardware schematic)
+### Pin Assignments (Master — confirmed from firmware, PCB verified)
 ```cpp
-#define PIN_SMOKE_SENSOR    34   // ADC1_CH6 — MQ2
-#define PIN_DHT11           4    // DHT11 data (1-Wire)
-#define PIN_RADAR_OUT       36   // Microwave radar digital output
-#define PIN_STEPPER_A       18   // Stepper motor coil A
-#define PIN_STEPPER_B       19   // Stepper motor coil B
-#define PIN_STEPPER_C       21   // Stepper motor coil C
-#define PIN_STEPPER_D       22   // Stepper motor coil D
-#define PIN_BUZZER          25   // PWM output
-#define PIN_EXHAUST_FAN     32   // Relay — exhaust fan
-#define PIN_SPRINKLER_LOCK  27   // Pin-driven door lock solenoid (sequence step 2)
-#define PIN_SPRINKLER_VALVE 26   // Water solenoid valve (sequence step 3)
-#define PIN_TUBELIGHT       33   // Emergency tubelight relay
-#define PIN_LED_RED         14
-#define PIN_LED_GREEN       13
-#define PIN_UART_TX         17   // Serial2 TX → Display MCU RX
-#define PIN_UART_RX         16   // Serial2 RX → Display MCU TX
+#define SMOKE_SENSOR_PIN    34   // ADC1_CH6 — MQ2
+#define DHT_PIN             27   // DHT22 data (1-Wire) — NOT GPIO4, NOT DHT11
+#define DHT_TYPE            DHT22
+// HLK-LD2410B radar — HardwareSerial(2), 256000 baud
+#define HUMAN_DETECT_RX     26
+#define HUMAN_DETECT_TX     14
+// 28BYJ-48 stepper (ULN2003, full-step)
+#define STEPPER_IN1         16
+#define STEPPER_IN2         4
+#define STEPPER_IN3         17
+#define STEPPER_IN4         2
+#define EXHAUST_PIN         21   // ESC/brushless motor, LEDC ch2, 50Hz RC signal
+#define PUMP_PIN            32
+#define BUZZER_PIN          33
+#define TUBE_LIGHT_PIN      25   // WS2812B strip (FastLED), 8 LEDs
+#define BATTERY_ADC_PIN     39   // ADC1_CH3, 100k/27k divider, -0.4V cal offset
+#define BUTTON_OK           5
+#define BUTTON_CANCEL       0
+#define BUTTON_UP           19
+#define BUTTON_DOWN         18
+// LCD I2C: SDA=23, SCL=22, addr=0x27 (LiquidCrystal_I2C, 20×4)
+// UART1 to slave display MCU — confirmed working from PCB
+#define SLAVE_TX_PIN        11   // Master TX → Slave RX (GPIO5)
+#define SLAVE_RX_PIN        12   // Master RX ← Slave TX (GPIO4)
+```
+
+### Pin Assignments (Slave Display MCU — confirmed from firmware, PCB verified)
+```cpp
+// UART1 from master — confirmed working from PCB
+#define MASTER_RX_PIN       5    // Slave RX ← Master TX (GPIO11)
+#define MASTER_TX_PIN       4    // Slave TX → Master RX (GPIO12)
 ```
 
 ---
@@ -245,8 +260,9 @@ Format: JSON-over-UART at 115200 baud, newline-terminated messages.
 
 Firmware → Display (every 1 second):
 ```json
-{"t":"state","smoke":0.12,"co":8.4,"temp":23.5,"hum":52.0,"status":"online","alarm":false}
+{"t":"state","seq":1,"smoke":0.12,"temp":23.5,"hum":52.0,"alarm":false}
 ```
+> **Note:** `co` field removed — no CO sensor. `seq` counter added. Both confirmed in working firmware.
 
 Display → Firmware (on maintenance code entry / technician action):
 ```json
