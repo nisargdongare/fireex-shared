@@ -15,37 +15,60 @@ The firmware running on the ESP32 MCU inside each FireEx hardware unit. Responsi
 ## Hardware Configuration
 
 ### Sensors
-| Sensor | Type | Interface | Notes |
-|--------|------|-----------|-------|
-| Smoke | Photoelectric (TBD model) | Analog (ADC) | Reading normalized 0.0–1.0 |
-| CO | MQ-7 or similar | Analog (ADC) + GPIO (heater cycle) | Requires warm-up time |
-| Temperature + Humidity | DHT22 or SHT31 | Digital (1-Wire or I2C) | |
+| Sensor | Model | Interface | Notes |
+|--------|-------|-----------|-------|
+| Smoke | MQ2 | Analog (ADC) | Reading normalized 0.0–1.0; detects smoke, LPG, CO |
+| Temperature + Humidity | DHT11 | Digital (1-Wire) | Combined sensor, 1 GPIO |
+| Motion/Presence | Microwave radar | GPIO (digital out) | Swept by stepper motor to positions A/B/C/D |
+
+> **Note:** CO sensor removed — MQ2 covers smoke and combustible gases. DHT11 (not DHT22) confirmed from hardware design.
+
+### Microwave Radar — Stepper Motor Positions
+The radar module sweeps a stepper motor through 4 positions to provide directional presence coverage:
+| Position | Zone |
+|----------|------|
+| A | Left quadrant |
+| B | Front-left |
+| C | Front-right |
+| D | Right quadrant |
 
 ### Actuators
 | Actuator | Interface | Notes |
 |----------|-----------|-------|
 | Buzzer | GPIO (PWM) | Variable frequency for different alarm tones |
+| Exhaust fan | GPIO (relay) | Smoke venting; controllable from mobile app |
+| Water sprinkler (one-shot) | Solenoid valve + GPIO | **Critical sequence:** unlock knob → open pin-driven door lock → trigger solenoid. ONE-SHOT — cannot be reset by firmware alone. Requires technician visit to reset |
+| Emergency tubelight | GPIO (relay) | Emergency lighting, activates on alarm |
 | LED Red | GPIO | Alarm / error indicator |
 | LED Green | GPIO | Normal operation / online indicator |
-| Relay | GPIO | NO/NC output for external alarm panel integration |
+
+> **Sprinkler safety note:** The solenoid valve is preceded by a physical unlock knob and a pin-driven door lock. The firmware must execute the unlock sequence in the correct order before triggering. Failure to follow the sequence will not trigger the sprinkler. Once triggered, water flow is physical and cannot be stopped remotely.
 
 ### Communication
 | Interface | Purpose |
 |-----------|---------|
-| WiFi | MQTT to backend |
+| WiFi | Primary MQTT to backend |
+| BLE | Device pairing during installation (technician app scans and pairs) |
+| GSM module | Cellular backup when WiFi is unavailable; sends SMS alert fallback |
 | UART (Serial2) | Communication with Display UI (ESP32-S3) |
 | USB Serial (Serial0) | Programming and provisioning |
 
 ### Pin Assignments (TBD — finalize with hardware schematic)
 ```cpp
-#define PIN_SMOKE_SENSOR    34   // ADC1_CH6
-#define PIN_CO_SENSOR       35   // ADC1_CH7
-#define PIN_CO_HEATER       26   // CO sensor heater control
-#define PIN_DHT22           4    // DHT22 data
+#define PIN_SMOKE_SENSOR    34   // ADC1_CH6 — MQ2
+#define PIN_DHT11           4    // DHT11 data (1-Wire)
+#define PIN_RADAR_OUT       36   // Microwave radar digital output
+#define PIN_STEPPER_A       18   // Stepper motor coil A
+#define PIN_STEPPER_B       19   // Stepper motor coil B
+#define PIN_STEPPER_C       21   // Stepper motor coil C
+#define PIN_STEPPER_D       22   // Stepper motor coil D
 #define PIN_BUZZER          25   // PWM output
-#define PIN_LED_RED         27
-#define PIN_LED_GREEN       14
-#define PIN_RELAY           32
+#define PIN_EXHAUST_FAN     32   // Relay — exhaust fan
+#define PIN_SPRINKLER_LOCK  27   // Pin-driven door lock solenoid (sequence step 2)
+#define PIN_SPRINKLER_VALVE 26   // Water solenoid valve (sequence step 3)
+#define PIN_TUBELIGHT       33   // Emergency tubelight relay
+#define PIN_LED_RED         14
+#define PIN_LED_GREEN       13
 #define PIN_UART_TX         17   // Serial2 TX → Display MCU RX
 #define PIN_UART_RX         16   // Serial2 RX → Display MCU TX
 ```
@@ -162,7 +185,6 @@ void loop() {
 ### Trigger Conditions
 Alert is triggered when ANY of these is true for 3 consecutive readings (to prevent false positives from transient spikes):
 - `smokeLevel >= smokeThreshold`
-- `coPpm >= coThresholdPpm`
 - `temperatureCelsius >= tempThresholdCelsius`
 
 ### Local Alarm Sequence
@@ -170,9 +192,21 @@ Alert is triggered when ANY of these is true for 3 consecutive readings (to prev
 1. Buzzer: continuous tone at 3500Hz
 2. LED Red: on solid
 3. LED Green: off
-4. Relay: activate (for external alarm panel)
-5. MQTT alert published (if connected)
+4. Emergency tubelight: activate
+5. Exhaust fan: activate automatically
+6. Sprinkler: ONLY if commanded by backend (never auto-triggers from firmware alone)
+7. MQTT alert published (if connected); GSM SMS sent if WiFi unavailable
 ```
+
+### Sprinkler Activation Sequence (command-driven only)
+When backend sends `command: "activate_sprinkler"`:
+```
+1. Rotate unlock knob (GPIO pulse)
+2. Disengage pin-driven door lock (GPIO pulse, wait for confirmation)
+3. Open solenoid valve (GPIO set HIGH)
+4. Publish sprinkler_activated event to MQTT
+```
+**This sequence is irreversible from firmware.** Water flow continues until physical reset by technician.
 
 ### Alarm Silence (via command)
 - Backend publishes `command: "silence_alarm"` → buzzer stops, relay deactivates
@@ -214,12 +248,20 @@ Firmware → Display (every 1 second):
 {"t":"state","smoke":0.12,"co":8.4,"temp":23.5,"hum":52.0,"status":"online","alarm":false}
 ```
 
-Display → Firmware (on PIN entry / technician action):
+Display → Firmware (on maintenance code entry / technician action):
 ```json
-{"t":"pin_ok","pin":"123456"}
+{"t":"maintenance_code","code":"482193"}
 {"t":"silence_request"}
 {"t":"test_alarm_request"}
 ```
+
+Firmware → Display (in response to maintenance code):
+```json
+{"t":"maintenance_code_result","accepted":true}
+{"t":"maintenance_code_result","accepted":false}
+```
+
+When `accepted: true`, device enters maintenance mode. The technician app is notified via MQTT, and the TicketDetailScreen transitions to "Confirmed" state showing the "Start work checklist" button.
 
 ---
 
@@ -248,7 +290,7 @@ Triggered by `ota_update` command from backend:
 ## Key Implementation Notes
 
 - Use `millis()`-based non-blocking timing throughout — no `delay()` in the main loop
-- CO sensor (MQ-7) requires a heater cycle: 60s at 5V, then 90s at 1.4V. Handle this in `co_sensor.cpp`. Do not read CO value during heater high phase.
+- MQ2 requires ~20s warm-up after power-on before readings are stable; ignore early readings
 - ADC readings on ESP32 are noisy — use averaging over 10 samples per reading cycle
 - Use `ArduinoJson` library for all JSON serialization/deserialization
 - Use `PubSubClient` or `AsyncMqttClient` — decision TBD (see `decisions/architecture-decisions.md`)

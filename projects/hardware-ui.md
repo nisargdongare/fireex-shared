@@ -17,15 +17,20 @@ The display UI runs on a dedicated ESP32-S3 MCU inside the FireEx hardware unit.
 
 | Component | Details |
 |-----------|---------|
-| MCU | ESP32-S3 (Xtensa LX7 dual-core, 240MHz, built-in USB) |
-| Display | 5" TFT, 800×480, RGB parallel interface (40-pin) |
-| Touch | Capacitive, FT5x06 or GT911 over I2C |
-| LVGL frame buffer | PSRAM-backed double buffer (ESP32-S3 has PSRAM support) |
+| MCU | ESP32-S3-WROOM-1 N16R8 (Xtensa LX7 dual-core, 240MHz, built-in USB) |
+| Flash | 16MB (N16 variant) |
+| PSRAM | 8MB (R8 variant) |
+| Display | SmartElex 5" 800×480, capacitive touch, **40-pin RGB header** (NOT FPC connector) |
+| Touch | Capacitive touch controller over I2C (confirmed; exact IC TBD — likely GT911) |
+| Display interface | RGB parallel, 40-pin header directly on PCB |
+| LVGL frame buffer | PSRAM-backed double buffer (8MB PSRAM provides ample space for 800×480×2 buffers) |
 | Communication | UART to firmware ESP32 (Serial1 at 115200 baud) |
 
+> **Important:** This display uses a **40-pin RGB parallel header** soldered directly to the PCB, not an FPC ribbon connector. Do not reference FPC in firmware or hardware docs.
+
 ### Pin Assignments (TBD — finalize with hardware schematic)
-- RGB pins: 16 data bits (R[4:0], G[5:0], B[4:0]) + HSYNC, VSYNC, PCLK, DE
-- Touch I2C: SDA, SCL
+- RGB pins: 16 data bits (R[4:0], G[5:0], B[4:0]) + HSYNC, VSYNC, PCLK, DE — via 40-pin header
+- Touch I2C: SDA, SCL (confirmed I2C, touch IC to be verified as GT911)
 - UART to firmware: TX (GPIO17), RX (GPIO18)
 
 ---

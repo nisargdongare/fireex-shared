@@ -39,7 +39,7 @@ cancelled           pending_parts → in_progress → resolved
 ```sql
 CREATE TABLE tickets (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  ticket_number       VARCHAR(20) NOT NULL UNIQUE,   -- human-readable: "TKT-2024-0042"
+  ticket_number       VARCHAR(20) NOT NULL UNIQUE,   -- human-readable: "TCKT-4821"
   type                VARCHAR(30) NOT NULL
                       CHECK (type IN ('alert_response','scheduled_maintenance','corrective_maintenance','installation')),
   status              VARCHAR(20) NOT NULL DEFAULT 'open'
@@ -85,11 +85,12 @@ CREATE TABLE ticket_checklist_items (
 ### Default Checklist by Ticket Type
 
 **`alert_response`:**
-1. Verify alarm condition (check sensors, no obstruction)
-2. Check for actual fire/smoke (visual inspection)
-3. Document cause of alarm
-4. Test device after resolution
-5. Reset device alarm state
+1. Device confirmed maintenance mode (pre-checked after technician enters code on device)
+2. Inspect site for fire/smoke damage (visual inspection)
+3. Inspect and clean MQ2 smoke sensor chamber
+4. Check sprinkler valve status — if triggered, reset physical valve and restock water supply
+5. Test device after resolution (buzzer, LEDs, exhaust fan, all sensors)
+6. Reset device alarm state in backend
 
 **`scheduled_maintenance`:**
 1. Visual inspection of unit and mounting
@@ -146,9 +147,9 @@ CREATE TABLE ticket_attachments (
 
 ## Ticket Number Generation
 
-Format: `TKT-YYYY-NNNN` (e.g., `TKT-2024-0042`)
-- Year is the calendar year at creation time
-- Number is a zero-padded sequential counter per year
+Format: `TCKT-NNNN` (e.g., `TCKT-4821`)
+- Sequential 4-digit counter, no year prefix
+- Zero-padded to 4 digits minimum
 - Generated in backend at ticket creation, never by the client
 
 ---

@@ -76,12 +76,14 @@ All sensor data is written here. TimescaleDB automatically partitions by time.
 CREATE TABLE sensor_readings (
   time                TIMESTAMPTZ NOT NULL,
   device_id           UUID NOT NULL,
-  smoke_level         FLOAT,        -- normalized 0.0–1.0 (1.0 = maximum smoke detected)
-  co_ppm              FLOAT,        -- carbon monoxide in parts per million
-  temperature_celsius FLOAT,        -- ambient temperature
-  humidity_pct        FLOAT,        -- relative humidity percentage
+  smoke_level         FLOAT,        -- normalized 0.0–1.0 from MQ2
+  temperature_celsius FLOAT,        -- from DHT11
+  humidity_pct        FLOAT,        -- from DHT11
   battery_pct         FLOAT,        -- battery level if on backup power
   wifi_rssi           INTEGER,      -- WiFi signal strength (dBm)
+  gsm_signal_bars     SMALLINT,     -- GSM backup carrier signal bars (0–5)
+  exhaust_fan_on      BOOLEAN,      -- state of exhaust fan relay
+  sprinkler_triggered BOOLEAN,      -- one-shot sprinkler activation state
   raw_payload         JSONB         -- full raw MQTT payload for debugging
 );
 
@@ -134,12 +136,16 @@ Each device authenticates to the MQTT broker using:
 
 | Field | Unit | Range | Notes |
 |-------|------|-------|-------|
-| `smoke_level` | normalized | 0.0 – 1.0 | Photoelectric sensor |
-| `co_ppm` | PPM | 0 – 1000 | CO gas sensor |
-| `temperature_celsius` | °C | -10 – 100 | Ambient temp |
-| `humidity_pct` | %RH | 0 – 100 | Relative humidity |
-| `battery_pct` | % | 0 – 100 | Only when on battery backup |
-| `wifi_rssi` | dBm | -100 – 0 | WiFi signal |
+| `smoke_level` | normalized | 0.0 – 1.0 | MQ2 sensor reading |
+| `temperature_celsius` | °C | -10 – 100 | DHT11 ambient temp |
+| `humidity_pct` | %RH | 0 – 100 | DHT11 relative humidity |
+| `battery_pct` | % | 0 – 100 | Battery backup level; shown on DeviceDetail screen |
+| `wifi_rssi` | dBm | -100 – 0 | WiFi signal strength; shown on DeviceDetail |
+| `gsm_signal_bars` | integer | 0 – 5 | GSM backup carrier signal; shown on DeviceDetail |
+| `exhaust_fan_on` | boolean | — | Current state of exhaust fan relay; controllable from app |
+| `sprinkler_triggered` | boolean | — | Has the one-shot sprinkler been activated; shown as "Active/Inactive" on EmergencyAlertScreen |
+| `buzzer_muted` | boolean | — | Whether local buzzer has been silenced; controllable from app |
+| `is_armed` | boolean | — | Device armed state; controllable from app (Armed toggle) |
 
 ---
 

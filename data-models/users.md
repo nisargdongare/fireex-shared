@@ -22,8 +22,13 @@ CREATE TABLE users (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   phone_number    VARCHAR(20) NOT NULL UNIQUE,  -- E.164 format: +1234567890
   full_name       VARCHAR(255) NOT NULL,
+  email           VARCHAR(255),                 -- optional; shown on Profile screen
   role            VARCHAR(20) NOT NULL CHECK (role IN ('end_user', 'technician', 'dept_admin', 'super_admin')),
   department_id   UUID REFERENCES departments(id) ON DELETE SET NULL,  -- NULL for super_admin
+  designation     VARCHAR(255),                 -- job title e.g. "Senior Fire Safety Officer"
+  employee_id     VARCHAR(100),                 -- org employee ID shown on Profile screen
+  site            VARCHAR(255),                 -- physical site / campus name
+  household_role  VARCHAR(20) CHECK (household_role IN ('owner', 'member')),  -- for building-level membership
   is_active       BOOLEAN NOT NULL DEFAULT true,
   created_by      UUID REFERENCES users(id),    -- which admin registered this user
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -32,9 +37,12 @@ CREATE TABLE users (
 ```
 
 ### Field Notes
-- `phone_number`: stored in E.164 format (e.g., `+911234567890`). This is the login identifier.
+- `phone_number`: stored in E.164 format (e.g., `+911234567890`). This is the login identifier and is shown with "Verified" badge on Profile screen.
 - `role`: a single role per user. Roles are not composable — a technician cannot also be a dept_admin.
 - `department_id`: required for `end_user`, `technician`, `dept_admin`. NULL for `super_admin`.
+- `designation`, `employee_id`, `site`: confirmed from Profile screen WORK DETAILS section.
+- `email`: shown in CONTACT section of Profile screen; optional.
+- `household_role`: `owner` or `member` — determines whether the user can invite others to the building group. Shown in Profile ACCESS section.
 - `is_active`: soft-delete / deactivation mechanism. Deactivated users cannot log in.
 
 ---
