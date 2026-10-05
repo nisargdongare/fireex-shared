@@ -33,16 +33,19 @@ The radar module sweeps a stepper motor through 4 positions to provide direction
 | D | Right quadrant |
 
 ### Actuators
-| Actuator | Interface | Notes |
-|----------|-----------|-------|
-| Buzzer | GPIO (PWM) | Variable frequency for different alarm tones |
-| Exhaust fan | GPIO (PWM/ESC) | Brushless motor via ESC, LEDC ch2, 50Hz RC signal; controllable from mobile app |
-| Water sprinkler (one-shot) | Solenoid valve + GPIO | **Critical sequence:** unlock knob → open pin-driven door lock → trigger solenoid. ONE-SHOT — cannot be reset by firmware alone. Requires technician visit to reset |
-| Emergency tubelight | GPIO (relay) | Emergency lighting, activates on alarm |
-| LED Red | GPIO | Alarm / error indicator |
-| LED Green | GPIO | Normal operation / online indicator |
+| Actuator | GPIO | Interface | Notes |
+|----------|------|-----------|-------|
+| Solenoid valve | 18 | Digital output | Water solenoid; controllable from Outputs screen |
+| Buzzer | 7 | Digital output (PWM capable) | Alarm sound; controllable from Outputs screen |
+| Smoke sensor enable | 6 | Digital output | Powers/enables MQ2 module; controllable from Outputs screen |
+| Emergency tubelight | 17 | Digital output via IRF44N MOSFET | 24V tubelight; controllable from Outputs screen |
+| Door lock | 15 | Digital output | Electromagnetic door lock; controllable from Outputs screen |
+| Power fan | 16 | Digital output | Main ventilation fan relay; controllable from Outputs screen |
+| Exhaust fan | — | PWM/ESC | Brushless motor via ESC, 50Hz RC signal; speed set via Exhaust Speed screen |
+| LED Red | — | Digital output | Alarm / error indicator |
+| LED Green | — | Digital output | Normal operation / online indicator |
 
-> **Sprinkler safety note:** The solenoid valve is preceded by a physical unlock knob and a pin-driven door lock. The firmware must execute the unlock sequence in the correct order before triggering. Failure to follow the sequence will not trigger the sprinkler. Once triggered, water flow is physical and cannot be stopped remotely.
+> **Output control:** All 6 main outputs (solenoid valve, buzzer, smoke sensor, tube light, door lock, power fan) are individually controllable from the display's Outputs on/off screen. Toggling any output sends an immediate UART command to the master MCU which drives the corresponding GPIO.
 
 ### Communication
 | Interface | Purpose |
@@ -53,32 +56,20 @@ The radar module sweeps a stepper motor through 4 positions to provide direction
 | UART1 (HardwareSerial(1)) | Communication with Display UI (ESP32-S3); TX=GPIO11, RX=GPIO12 on master |
 | USB Serial (Serial0) | Programming and provisioning |
 
-### Pin Assignments (Master — confirmed from firmware, PCB verified)
+### Pin Assignments (Master — confirmed from firmware `src/master/main_master.cpp`)
 ```cpp
-#define SMOKE_SENSOR_PIN    34   // ADC1_CH6 — MQ2
-#define DHT_PIN             27   // DHT22 data (1-Wire) — NOT GPIO4, NOT DHT11
-#define DHT_TYPE            DHT22
-// HLK-LD2410B radar — HardwareSerial(2), 256000 baud
-#define HUMAN_DETECT_RX     26
-#define HUMAN_DETECT_TX     14
-// 28BYJ-48 stepper (ULN2003, full-step)
-#define STEPPER_IN1         16
-#define STEPPER_IN2         4
-#define STEPPER_IN3         17
-#define STEPPER_IN4         2
-#define EXHAUST_PIN         21   // ESC/brushless motor, LEDC ch2, 50Hz RC signal
-#define PUMP_PIN            32
-#define BUZZER_PIN          33
-#define TUBE_LIGHT_PIN      25   // WS2812B strip (FastLED), 8 LEDs
-#define BATTERY_ADC_PIN     39   // ADC1_CH3, 100k/27k divider, -0.4V cal offset
-#define BUTTON_OK           5
-#define BUTTON_CANCEL       0
-#define BUTTON_UP           19
-#define BUTTON_DOWN         18
-// LCD I2C: SDA=23, SCL=22, addr=0x27 (LiquidCrystal_I2C, 20×4)
+// Output GPIOs — all digital, driven HIGH=on / LOW=off
+#define PIN_SOLENOID_VALVE  18   // Water solenoid valve
+#define PIN_BUZZER           7   // Alarm buzzer
+#define PIN_SMOKE_SENSOR     6   // MQ2 enable / power
+#define PIN_TUBE_LIGHT      17   // 24V emergency tubelight via IRF44N MOSFET
+#define PIN_DOOR_LOCK       15   // Electromagnetic door lock
+#define PIN_POWER_FAN       16   // Main ventilation fan relay
+
 // UART1 to slave display MCU — confirmed working from PCB
 #define SLAVE_TX_PIN        11   // Master TX → Slave RX (GPIO5)
 #define SLAVE_RX_PIN        12   // Master RX ← Slave TX (GPIO4)
+#define SLAVE_BAUD          115200
 ```
 
 ### Pin Assignments (Slave Display MCU — confirmed from firmware, PCB verified)
@@ -293,26 +284,40 @@ On boot: load config from NVS. If no config: use `credentials.h` defaults + wait
 
 Format: JSON-over-UART at 115200 baud, newline-terminated messages.
 
-Firmware → Display (every 1 second):
+### Master → Display (every 1 second)
 ```json
-{"t":"state","seq":1,"smoke":0.12,"temp":23.5,"hum":52.0,"alarm":false}
+{"t":"state","seq":1,"smoke":0.0,"temp":25.0,"hum":50.0,"alarm":false,
+ "tubelight":false,"door_lock":true,"power_fan":false,
+ "smoke_sensor":true,"buzzer":false,"solenoid":false}
 ```
-> **Note:** `co` field removed — no CO sensor. `seq` counter added. Both confirmed in working firmware.
+All 6 output states are included so the display can reflect live hardware state.
 
-Display → Firmware (on maintenance code entry / technician action):
+### Display → Master (output toggle — immediate, on each toggle change)
+```json
+{"t":"output","action":"power_fan","value":true}
+{"t":"output","action":"tubelight","value":false}
+{"t":"output","action":"door_lock","value":true}
+{"t":"output","action":"smoke_sensor","value":true}
+{"t":"output","action":"buzzer","value":false}
+{"t":"output","action":"solenoid_valve","value":false}
+{"t":"output","action":"exhaust_fan","value":true}
+```
+Sent immediately when a toggle is flipped on the Outputs screen — no Save required. Master drives the corresponding GPIO on receipt.
+
+### Display → Master (technician actions)
 ```json
 {"t":"maintenance_code","code":"482193"}
 {"t":"silence_request"}
 {"t":"test_alarm_request"}
 ```
 
-Firmware → Display (in response to maintenance code):
+### Master → Display (maintenance code response)
 ```json
 {"t":"maintenance_code_result","accepted":true}
 {"t":"maintenance_code_result","accepted":false}
 ```
 
-When `accepted: true`, device enters maintenance mode. The technician app is notified via MQTT, and the TicketDetailScreen transitions to "Confirmed" state showing the "Start work checklist" button.
+When `accepted: true`, device enters maintenance mode. The technician app is notified via MQTT.
 
 ---
 

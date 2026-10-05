@@ -1,6 +1,6 @@
 # FireEx Project Status
 
-Last updated: 2026-10-04
+Last updated: 2026-10-05
 
 ---
 
@@ -84,35 +84,34 @@ Last updated: 2026-10-04
 ---
 
 ### `fireex-firmware` (ESP32 Hardware Firmware)
-**Status:** Not started
-**Repo:** Not created
+**Status:** In progress
+**Repo:** `~/Documents/PlatformIO/Projects/fireex-firmware` (PlatformIO, ESP32-S3)
 
 **What's done:**
-- Hardware config and firmware architecture documented (`projects/hardware-firmware.md`)
-- MQTT topic structure defined (`api-contracts/mqtt-topics.md`)
-- Sensor/actuator pin assignments drafted (TBD final from hardware schematic)
+- ✅ Dual-MCU structure: master (sensors/actuators) + slave (display UI) on ESP32-S3-WROOM-1 N16R8
+- ✅ UART link working: master sends state frames every 1s; slave sends output commands
+- ✅ All 6 output GPIOs defined and working: solenoid (18), buzzer (7), smoke sensor (6), tube light (17), door lock (15), power fan (16)
+- ✅ Output toggle → immediate UART command → master drives GPIO (no Save required)
+- ✅ PIN persistence in NVS (`Preferences`, namespace `"session"`) — survives reboots
+- ✅ Post-reboot boot flow: splash → PIN entry screen when PIN already set
+- ✅ Display Outputs screen: 7 toggles (tube light, door lock, power fan, smoke sensor, buzzer, exhaust fan, solenoid valve)
+- ✅ Menu lock button: returns to Home and re-requires PIN to re-enter
 
 **Next steps:**
-1. Create repo `fireex-firmware`
-2. Initialize PlatformIO project for ESP32
-3. Set up WiFi connection manager
-4. Set up MQTT client (PubSubClient or AsyncMqttClient — decide first)
-5. Implement sensor reads (smoke, CO, temp/humidity)
-6. Implement telemetry publish
-7. Implement threshold-based alert publish
-8. Implement buzzer/LED/relay actuator control
+1. Wire real MQ2 ADC read on master (smoke value currently hardcoded 0.0)
+2. Wire DHT22 temp/humidity read on master
+3. Implement MQTT client on master (WiFi + telemetry publish)
+4. Wire UART state frame → live update of all g_model fields on slave display
+5. Test alarm pre-emption end-to-end with real firmware
 
 **Blockers:**
-- Hardware schematic not finalized (pin assignments TBD)
-- CO sensor model not decided
-- Smoke sensor model not decided
-- MQTT library choice not decided (PubSubClient vs AsyncMqttClient)
+- MQTT broker not set up yet (backend not started)
 
 ---
 
 ### `fireex-ui` (ESP32-S3 Display UI)
 **Status:** In progress
-**Repo:** `5inchTFT` (PlatformIO, `~/Documents/PlatformIO/Projects/5inchTFT`)
+**Repo:** `fireex-firmware/src/slave` (merged into firmware repo, `~/Documents/PlatformIO/Projects/fireex-firmware`)
 
 **What's done:**
 - ✅ Hardware bring-up complete: RGB LCD (ST7265, 800×480), GT911 touch, LVGL 8 stack
