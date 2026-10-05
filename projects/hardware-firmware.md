@@ -86,6 +86,41 @@ The radar module sweeps a stepper motor through 4 positions to provide direction
 // UART1 from master — confirmed working from PCB
 #define MASTER_RX_PIN       5    // Slave RX ← Master TX (GPIO11)
 #define MASTER_TX_PIN       4    // Slave TX → Master RX (GPIO12)
+
+// RGB565 display bus (ST7265, 800×480)
+#define PIN_B3  3
+#define PIN_B4  20
+#define PIN_B5  19
+#define PIN_B6  8
+#define PIN_B7  18
+#define PIN_G2  39
+#define PIN_G3  38
+#define PIN_G4  11
+#define PIN_G5  12
+#define PIN_G6  9
+#define PIN_G7  10
+#define PIN_R3  13
+#define PIN_R4  14
+#define PIN_R5  21
+#define PIN_R6  47
+#define PIN_R7  48
+
+// RGB control signals — confirmed from PCB schematic
+#define PIN_PCLK   17
+#define PIN_VSYNC  7
+#define PIN_HSYNC  15
+#define PIN_DE     6
+#define PIN_DISP   16   // bodge-wired; active-LOW during reset, HIGH after RGB timing stable
+
+// Backlight & status
+#define PIN_BACKLIGHT   40  // active-LOW (inverting stage ahead of boost converter)
+#define PIN_STATUS_LED  46
+
+// GT911 capacitive touch (I2C)
+#define PIN_TOUCH_SDA  2
+#define PIN_TOUCH_SCL  42
+#define PIN_TOUCH_INT  1
+#define PIN_TOUCH_RST  41
 ```
 
 ---
