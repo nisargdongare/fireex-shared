@@ -40,6 +40,10 @@ Published by the device with every sensor reading cycle.
     "temperatureCelsius": 23.5,
     "humidityPct": 52.0,
     "batteryPct": 95.0,
+    "batteryVoltage": 23.1,
+    "mainsVoltage": 228.4,
+    "mainsPresent": true,
+    "batteryCharging": true,
     "wifiRssi": -65
   },
   "fwVersion": "1.2.3"
@@ -74,7 +78,7 @@ Published immediately when a threshold is crossed — does not wait for the next
 }
 ```
 
-Valid `alertType` values: `smoke`, `co`, `temperature`, `tamper`, `battery_low`
+Valid `alertType` values: `smoke`, `co`, `temperature`, `tamper`, `battery_low`, `mains_lost`
 
 ---
 

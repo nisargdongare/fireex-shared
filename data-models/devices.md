@@ -59,6 +59,8 @@ CREATE TABLE device_configs (
   co_threshold_ppm        FLOAT NOT NULL DEFAULT 50.0,   -- PPM
   temp_threshold_celsius  FLOAT NOT NULL DEFAULT 60.0,   -- °C
   humidity_threshold_pct  FLOAT NOT NULL DEFAULT 80.0,   -- %RH
+  low_battery_voltage_v   FLOAT NOT NULL DEFAULT 20.0,   -- below this = battery LOW / 0%; range 15–24V
+  low_mains_voltage_v     FLOAT NOT NULL DEFAULT 20.0,   -- below this = mains absent; range 15–24V
   reporting_interval_sec  INTEGER NOT NULL DEFAULT 30,   -- how often to send telemetry
   alarm_auto_silence_sec  INTEGER NOT NULL DEFAULT 0,    -- 0 = never auto-silence
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -79,7 +81,11 @@ CREATE TABLE sensor_readings (
   smoke_level         FLOAT,        -- normalized 0.0–1.0 from MQ2
   temperature_celsius FLOAT,        -- from DHT11
   humidity_pct        FLOAT,        -- from DHT11
-  battery_pct         FLOAT,        -- battery level if on backup power
+  battery_pct         FLOAT,        -- 0–100%, computed on device from voltage vs low_battery_voltage threshold
+  battery_voltage     FLOAT,        -- raw voltage (V) from GPIO9 ADC via R1=100kΩ/R2=12kΩ divider
+  mains_voltage       FLOAT,        -- raw voltage (V) from GPIO10 ADC via R1=100kΩ/R2=12kΩ divider
+  mains_present       BOOLEAN,      -- true if mains_voltage > low_mains_voltage threshold
+  battery_charging    BOOLEAN,      -- true if mains present AND battery voltage rose >0.3V over 30s
   wifi_rssi           INTEGER,      -- WiFi signal strength (dBm)
   gsm_signal_bars     SMALLINT,     -- GSM backup carrier signal bars (0–5)
   exhaust_fan_on      BOOLEAN,      -- state of exhaust fan relay
@@ -139,7 +145,11 @@ Each device authenticates to the MQTT broker using:
 | `smoke_level` | normalized | 0.0 – 1.0 | MQ2 sensor reading |
 | `temperature_celsius` | °C | -10 – 100 | DHT11 ambient temp |
 | `humidity_pct` | %RH | 0 – 100 | DHT11 relative humidity |
-| `battery_pct` | % | 0 – 100 | Battery backup level; shown on DeviceDetail screen |
+| `battery_pct` | % | 0 – 100 | Computed on device: 0% = low_battery_voltage threshold, 100% = 24V |
+| `battery_voltage` | V | 0 – 24 | Raw ADC reading via R1=100kΩ/R2=12kΩ divider on GPIO9 |
+| `mains_voltage` | V | 0 – 30 | Raw ADC reading via R1=100kΩ/R2=12kΩ divider on GPIO10 |
+| `mains_present` | boolean | — | True if mains_voltage > user-set low_mains_voltage threshold |
+| `battery_charging` | boolean | — | True if mains present AND voltage rising >0.3V over 30s window |
 | `wifi_rssi` | dBm | -100 – 0 | WiFi signal strength; shown on DeviceDetail |
 | `gsm_signal_bars` | integer | 0 – 5 | GSM backup carrier signal; shown on DeviceDetail |
 | `exhaust_fan_on` | boolean | — | Current state of exhaust fan relay; controllable from app |
