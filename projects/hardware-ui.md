@@ -5,8 +5,8 @@
 The display UI runs on a dedicated ESP32-S3 MCU inside the FireEx hardware unit. It drives a 5-inch 800×480 capacitive touch display using LVGL v8 over a 40-pin RGB parallel interface. The display shows live sensor data, device status, and active alerts — and provides a PIN-protected technician configuration screen.
 
 **Status:** In progress — hardware bring-up complete, full screen set implemented
-**Last updated:** 2026-10-04
-**Repo:** `5inchTFT` (PlatformIO project at `~/Documents/PlatformIO/Projects/5inchTFT`)
+**Last updated:** 2026-10-06
+**Repo:** `fireex-firmware` (PlatformIO project at `~/Documents/PlatformIO/Projects/fireex-firmware`, env: `slave`)
 **Platform:** ESP32-S3
 **Framework:** Arduino + PlatformIO
 **Language:** C++ (primary), C (HAL layer)
@@ -62,52 +62,56 @@ GT911 I2C address: **0x5D** (latched by holding INT low during reset sequence).
 > **Note:** The original planned structure has been superseded by the actual implementation below.
 
 ```
-5inchTFT/
-  platformio.ini
-  src/
-    main_esp32.cpp            ← Setup + loop (hardware init, LVGL glue, GT911 touch)
-    ui.cpp / ui.h             ← build_ui() entry point
-    hw.h                      ← hw_backlight_set() declaration
-    ui/
-      model.h / model.cpp     ← FireExModel g_model (live state mirrored from firmware MCU)
-      screen_manager.h/.cpp   ← ScreenManager g_screen_mgr (create-on-enter / destroy-on-leave)
-      session.h/.cpp          ← Technician session (PIN auth, auto-logout timer)
-      theme.h/.cpp            ← LVGL theme / colour tokens
-      screens/
-        scr_startup.cpp/.h    ← Boot splash (auto-advances to Home)
-        scr_home.cpp/.h       ← Main status screen
-        scr_alarm.cpp/.h      ← Full-screen alarm overlay (Alert / Panic states)
-        scr_pin.cpp/.h        ← PIN entry + lockout + first-run sub-states
-        scr_menu.cpp/.h       ← Technician menu (tile grid)
-        scr_alarm_levels.cpp/.h   ← Alert/Panic threshold settings
-        scr_alarm_log.cpp/.h      ← Recent alarm history
-        scr_exhaust_speed.cpp/.h  ← Exhaust fan speed setting
-        scr_fan_control.cpp/.h    ← Manual fan control
-        scr_outputs.cpp/.h        ← Output states (tubelight, buzzer, exhaust, sprinkler)
-        scr_sprinkler.cpp/.h      ← Sprinkler arm/fire/reset
-        scr_unlock_knob.cpp/.h    ← Sprinkler unlock knob sequence UI
-        scr_sensors.cpp/.h        ← Raw sensor readings + thresholds
-        scr_battery.cpp/.h        ← Battery status
-        scr_network.cpp/.h        ← Network overview (WiFi/GSM/BLE)
-        scr_wifi.cpp/.h           ← WiFi settings
-        scr_gsm.cpp/.h            ← GSM settings
-        scr_ble.cpp/.h            ← BLE settings
-        scr_display.cpp/.h        ← Display/brightness settings
-        scr_maintenance.cpp/.h    ← Maintenance mode (enter code, send to firmware)
-        scr_stepper.cpp/.h        ← Radar stepper motor position
-        scr_test_mode.cpp/.h      ← Test alarm
-        scr_change_pin.cpp/.h     ← Change technician PIN
-        scr_factory_reset.cpp/.h  ← Factory reset (PIN-gated)
-        scr_about.cpp/.h          ← Device info (FW/UI versions, MAC, device ID)
-        scr_placeholder.cpp/.h    ← Generic "Coming soon" for unbuilt screens
-      widgets/
-        status_bar.cpp/.h     ← Top bar (WiFi%, GSM%, BLE dot, battery%, time)
-        keypad.cpp/.h         ← Reusable numeric keypad widget (used by PIN + maintenance screens)
-        onoff_toggle.cpp/.h   ← Labelled on/off toggle widget
-        toast.cpp/.h          ← Transient toast notification widget
-        value_stepper.cpp/.h  ← +/- stepper for numeric settings
-  lv_conf.h                   ← LVGL configuration
+fireex-firmware/src/slave/
+  main_slave.cpp             ← Setup + loop (hardware init, LVGL glue, GT911 touch)
+  main_sim.cpp               ← SDL2 simulator entry point (env: simulator)
+  ui.cpp / ui.h              ← build_ui() entry point
+  hw.h                       ← hw_backlight_set() declaration
+  master_link.h              ← send_command_to_master() declaration
+  display_settings.h         ← save_rotation(), apply_rotation(), save_power_thresholds()
+  ui/
+    model.h / model.cpp      ← FireExModel g_model (live state mirrored from firmware MCU)
+    screen_manager.h/.cpp    ← ScreenManager g_screen_mgr (create-on-enter / destroy-on-leave)
+    session.h/.cpp           ← Session (auto-logout timer; PIN flow reserved for future use)
+    theme.h/.cpp             ← LVGL theme / colour tokens
+    screens/
+      scr_startup.cpp/.h     ← Boot splash (auto-advances to Home)
+      scr_home.cpp/.h        ← Main status screen
+      scr_alarm.cpp/.h       ← Full-screen alarm overlay (Alert / Panic states)
+      scr_pin.cpp/.h         ← PIN entry + lockout + first-run (kept, not wired to menu yet)
+      scr_menu.cpp/.h        ← Menu tile grid (3 groups: USER / SAFETY / HARDWARE)
+      scr_alarm_levels.cpp/.h    ← Alert/Panic threshold settings
+      scr_device_logs.cpp/.h     ← Device event log (fetched from BE API in future)
+      scr_exhaust_speed.cpp/.h   ← Exhaust fan speed setting
+      scr_outputs.cpp/.h         ← Test mode: Auto/Manual toggle + 7 output on/off rows
+      scr_sprinkler.cpp/.h       ← Sprinkler arm/fire/reset
+      scr_unlock_knob.cpp/.h     ← Sprinkler unlock knob sequence UI
+      scr_sensors.cpp/.h         ← Raw sensor readings + thresholds
+      scr_power.cpp/.h           ← Battery / power status and thresholds
+      scr_network.cpp/.h         ← Network overview (kept in codebase, not in menu)
+      scr_wifi.cpp/.h            ← WiFi settings
+      scr_gsm.cpp/.h             ← GSM settings
+      scr_ble.cpp/.h             ← BLE settings
+      scr_display.cpp/.h         ← Display/brightness settings
+      scr_maintenance.cpp/.h     ← Read-only maintenance info + health check (no Save, Back button)
+      scr_stepper.cpp/.h         ← Radar stepper motor position
+      scr_factory_reset.cpp/.h   ← Factory reset (PIN-gated)
+      scr_device_update.cpp/.h   ← OTA update check / available / up-to-date flow
+      scr_about.cpp/.h           ← Device info (FW/UI versions, MAC, device ID)
+      scr_placeholder.cpp/.h     ← Generic "Coming soon" for unbuilt tiles
+    widgets/
+      status_bar.cpp/.h      ← Top bar (WiFi%, GSM%, BLE dot, battery%, time)
+      keypad.cpp/.h          ← Reusable numeric keypad widget
+      onoff_toggle.cpp/.h    ← Labelled on/off toggle widget
+      toast.cpp/.h           ← Transient toast notification widget
+      value_stepper.cpp/.h   ← +/- stepper for numeric settings
 ```
+
+**Removed screens (deleted from codebase):**
+- `scr_test_mode` — replaced by Auto/Manual mode toggle in `scr_outputs` (now called "Test mode" in menu)
+- `scr_fan_control` — fan Auto/Manual is now part of `scr_outputs`
+- `scr_change_pin` — PIN change removed; PIN screen kept for future use
+- `scr_alarm_log` — renamed to `scr_device_logs` (data will come from BE API)
 
 ---
 
@@ -125,7 +129,7 @@ Default screen during normal operation.
 - Status bar widget across the top: WiFi %, GSM %, BLE dot, battery %, time
 - Sensor tiles: Smoke %, Temp °C, Humidity %RH, Radar presence indicator
 - Alarm level badge driven from `g_model.alarm_level`
-- Bottom-right "TECH ACCESS" button → `scr_pin`
+- Bottom-right "Menu" button → `scr_menu` (direct, no PIN gate currently)
 - `g_model.link_ok()` drives a "no link" indicator (Milestone 1: always true)
 
 ---
@@ -139,38 +143,47 @@ Full-screen overlay, appears whenever `g_model.alarm_level` is `Alert` or `Panic
 
 ---
 
-### PIN Entry (`scr_pin`) — ✅ Built
-Three sub-states managed within the screen (no navigate_to() for sub-states):
-- **Enter PIN** — 6-digit keypad entry
-- **Lockout** — shown after 3 failed attempts; 5-minute cooldown (RAM, resets on reboot)
-- **First Run** — prompts new PIN on first boot (default PIN `000000`)
-
-`navigate_to_pin(on_success_cb)` variant used by sprinkler reset and factory reset to PIN-gate individual actions without routing through the Menu.
+### PIN Entry (`scr_pin`) — ✅ Built (reserved for future use)
+Three sub-states: Enter PIN, Lockout (after 3 fails), First Run.
+- Menu is currently accessible directly without PIN (new requirement).
+- `scr_pin` is kept in the codebase; `navigate_to_pin(on_success_cb)` is still used by sprinkler reset and factory reset to PIN-gate those specific actions.
 
 ---
 
-### Technician Menu (`scr_menu`) — ✅ Built
-Tile grid; available only after successful PIN. Auto-exits on inactivity (session timer in `ui/session.cpp`). Tiles navigate to:
+### Menu (`scr_menu`) — ✅ Built
+Tile grid; accessible directly from the Home screen (no PIN required). Auto-exits on inactivity (session timer). Three groups, scrollable:
+
+**USER** (2 rows of 4):
 
 | Tile | Screen |
 |------|--------|
-| Alarm Levels | `scr_alarm_levels` |
-| Fan Control | `scr_fan_control` |
-| Exhaust Speed | `scr_exhaust_speed` |
-| Outputs | `scr_outputs` |
-| Sprinkler | `scr_sprinkler` |
-| Sensors | `scr_sensors` |
-| Battery | `scr_battery` |
-| Network | `scr_network` |
-| Display | `scr_display` |
+| Device logs | `scr_device_logs` |
 | Maintenance | `scr_maintenance` |
-| Stepper | `scr_stepper` |
-| Test Mode | `scr_test_mode` |
-| Alarm Log | `scr_alarm_log` |
-| Change PIN | `scr_change_pin` |
-| Factory Reset | `scr_factory_reset` |
+| Wi-Fi | `scr_wifi` |
+| GSM + numbers | `scr_gsm` |
+| Display | `scr_display` |
 | About | `scr_about` |
-| Unbuilt tiles | `scr_placeholder` |
+| BLE setup | `scr_ble` |
+| Device Update | `scr_device_update` |
+
+**SAFETY** (1 row of 4):
+
+| Tile | Screen |
+|------|--------|
+| Alarm levels | `scr_alarm_levels` |
+| Exhaust speed | `scr_exhaust_speed` |
+| Sprinkler | `scr_sprinkler` |
+| Test mode | `scr_outputs` |
+
+**HARDWARE** (1 row of 5):
+
+| Tile | Screen |
+|------|--------|
+| Sensors | `scr_sensors` |
+| Stepper | `scr_stepper` |
+| Unlock knob | `scr_unlock_knob` |
+| Power | `scr_power` |
+| Factory reset | `scr_factory_reset` |
 
 ---
 
@@ -180,8 +193,10 @@ Edit `alert_level_pct`, `panic_level_pct`, `clear_delay_s`. Uses `value_stepper`
 ### Exhaust Speed (`scr_exhaust_speed`) — ✅ Built
 Set `alert_fan_pct`, `panic_fan_mains_pct`, `panic_fan_batt_pct`.
 
-### Outputs (`scr_outputs`) — ✅ Built
-Toggle `tubelight_on`, `buzzer_output_on`, `exhaust_output_on`, `sprinkler_armed`. Uses `onoff_toggle` widget.
+### Test Mode (`scr_outputs`) — ✅ Built
+Reached via the "Test mode" tile in SAFETY. Two sections:
+- **Auto / Manual mode toggle** at the top (same pattern as former fan control) — saves to `g_model.mode` (Auto / Manual).
+- **7 output on/off rows** below: Tube light, Door lock, Power fan, Smoke sensor, Buzzer, Exhaust fan, Solenoid valve. Each toggle sends an immediate UART command to master; Save commits final states to `g_model`.
 
 ### Sprinkler (`scr_sprinkler`) — ✅ Built
 Arm/fire/reset controls. Sprinkler reset is PIN-gated via `navigate_to_pin()`. Shows `sprinkler_fired` state.
@@ -205,28 +220,45 @@ Per-radio status and on/off toggle (`wifi_on`, `gsm_on`, `ble_on`).
 `brightness_pct` (via `hw_backlight_set()`), `dim_after_s`, `screen_off_min`.
 
 ### Maintenance (`scr_maintenance`) — ✅ Built
-Technician enters a 6-digit maintenance code via the `keypad` widget.
-- Sends `{"t":"maintenance_code","code":"XXXXXX"}` to firmware via UART.
-- Firmware replies `{"t":"maintenance_code_result","accepted":true/false}`.
-- On accepted: device enters maintenance mode; backend notified via MQTT; mobile app TicketDetailScreen transitions to "Confirmed".
+Read-only info screen for the user. No Save button. Back button returns to Menu.
+- **Data source:** All maintenance data (service dates, health check statuses) comes from the backend API. The screen checks `g_model.maintenance_ready`; while `false` it shows a spinner + "Fetching data..." overlay. Once the API response is parsed and `maintenance_ready` is set to `true`, the screen must be re-opened to display the content (screen lifecycle: create-on-enter).
+- **Service dates card**: Last service date, Next due date, days remaining (`g_model.next_service_days`).
+- **Health check rows**: status indicator (green/amber dot) for Smoke sensor, Temp+humidity, Human radar, Door lock, Battery.
+- Interval setting and "Mark service done" button removed — service tracking is handled via the backend.
 
 ### Stepper (`scr_stepper`) — ✅ Built
 Shows current radar stepper position (A/B/C/D). Allows manual override for diagnostics.
 
-### Test Mode (`scr_test_mode`) — ✅ Built
-Sends `test_alarm_request` to firmware. Shows buzzer/LED response.
-
-### Alarm Log (`scr_alarm_log`) — ✅ Built
-Scrollable list of recent alarm events (data from `g_model`).
-
-### Change PIN (`scr_change_pin`) — ✅ Built
-Old PIN → new PIN → confirm. Stores in NVS.
+### Device Logs (`scr_device_logs`) — ✅ Built
+Paginated table of device events (alarm, power, output changes, mode changes, online/offline). Columns: When, Event, Peak smoke%, Person, Power source.
+- **Data source:** Fetched from `GET /api/devices/:id/logs`. The screen checks `g_model.logs_ready`; while `false` it shows a spinner + "Fetching data..." overlay inside the table container. Once logs are parsed into the model and `logs_ready` is set to `true`, the screen re-renders with data on next open.
+- Currently shows mock data in the simulator (`logs_ready = false` by default, `true` must be set explicitly to show data).
 
 ### Factory Reset (`scr_factory_reset`) — ✅ Built
-PIN-gated via `navigate_to_pin()`. Clears NVS config and reboots.
+PIN-gated via `navigate_to_pin()`. Clears NVS config and reboots. Located in the **HARDWARE** group on the menu.
+
+### Device Update (`scr_device_update`) — ✅ Built
+Located in the **USER** group. Checks for OTA firmware updates. Three UI states driven by `g_model.update_state` (`FireExModel::UpdateState` enum):
+
+| State | Display |
+|-------|---------|
+| `Checking` | LVGL arc spinner + "Checking for updates..." label |
+| `UpToDate` | Green `LV_SYMBOL_OK` icon + "Device is up to date" + current version (`g_model.master_fw_version`) |
+| `UpdateAvailable` | "Update Available" heading + side-by-side version boxes (Current vX.X → New vX.X) + **Update** (accent) and **Cancel** buttons |
+
+**Model fields:**
+- `g_model.update_state` — `FireExModel::UpdateState::Checking / UpToDate / UpdateAvailable`
+- `g_model.update_latest_version[16]` — version string set when update is available (e.g. `"1.1"`)
+
+In the simulator, a one-shot `lv_timer` fires after 3 s, sets `update_state = UpdateAvailable` and `update_latest_version = "1.1"`, then refreshes the screen if it is open. Real integration will parse an API response and set the same fields.
 
 ### About (`scr_about`) — ✅ Built
-FW version, UI version, device code, MAC address, uptime, service due info.
+- **Display version:** `g_model.display_fw_version` (stored in slave, currently `"1.0"`)
+- **Controller version:** `g_model.master_fw_version` (received from master MCU via UART `"fw_ver"` field)
+- Developed by: FireEx R&D Team
+- Contact: +91 8698800448
+- Website: www.globtouch.com
+- Copyright @ 2026
 
 ### Placeholder (`scr_placeholder`) — ✅ Built
 Generic "Coming soon" screen for any tile not yet wired to a real screen. Called via `navigate_to_placeholder(title)`.

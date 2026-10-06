@@ -307,6 +307,107 @@ Valid commands: `test_alarm`, `silence_alarm`, `reboot`, `sync_config`
 
 ---
 
+---
+
+## Device Logs
+
+Device logs are a unified, time-ordered log of every significant event that occurred on a specific device: alarms (alert/panic), power events, output state changes, mode switches (auto/manual), and test activations. The display UI fetches this from the backend and shows it in the **Device logs** screen (formerly "Alarm log").
+
+### GET /api/devices/:id/logs
+Fetch paginated device logs for a specific device, newest first.
+
+**Access:** `technician+`
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `page` | int | 1 | Page number |
+| `limit` | int | 20 | Items per page (max 100) |
+| `from` | ISO8601 | — | Start of time range (inclusive) |
+| `to` | ISO8601 | — | End of time range (inclusive) |
+| `type` | string | — | Filter by event type (see below) |
+
+**Event types:**
+
+| `type` | Description |
+|--------|-------------|
+| `alarm_alert` | Smoke level crossed alert threshold |
+| `alarm_panic` | Smoke level crossed panic threshold |
+| `alarm_cleared` | Alarm condition resolved |
+| `power_mains_lost` | Mains power lost, running on battery |
+| `power_mains_restored` | Mains power restored |
+| `battery_low` | Battery below configured low threshold |
+| `output_changed` | An output toggled (tube light, door lock, fan, buzzer, solenoid, smoke sensor) |
+| `mode_changed` | Operation mode switched between auto and manual |
+| `device_online` | Device came online |
+| `device_offline` | Device went offline (missed heartbeat) |
+| `test_activated` | Manual test mode activated from display |
+
+**Response 200:**
+```json
+{
+  "deviceId": "uuid",
+  "data": [
+    {
+      "id": "uuid",
+      "type": "alarm_alert",
+      "occurredAt": "2026-09-26T09:41:00Z",
+      "smokePct": 42,
+      "tempCelsius": 28.5,
+      "humidityPct": 55,
+      "personDetected": false,
+      "powerSource": "mains",
+      "batteryPct": 88,
+      "batteryVoltage": 24.6,
+      "outputStates": {
+        "tubelight": false,
+        "doorLock": true,
+        "powerFan": false,
+        "smokeSensor": true,
+        "buzzer": true,
+        "exhaustFan": false,
+        "solenoidValve": false
+      },
+      "meta": {}
+    }
+  ],
+  "pagination": { "page": 1, "limit": 20, "total": 47 }
+}
+```
+
+**Notes:**
+- `smokePct`, `tempCelsius`, `humidityPct`, `personDetected`, `batteryPct`, `batteryVoltage` are sensor snapshots captured at the moment the event occurred; they may be `null` for events where sensor context is not relevant (e.g. `device_online`).
+- `outputStates` is a snapshot of all output states at the time of the event; may be `null` for pure sensor events.
+- `meta` carries event-specific extra fields: e.g. `{ "output": "tubelight", "value": true }` for `output_changed`, `{ "mode": "manual" }` for `mode_changed`.
+- Logs are **write-once** — created by the MQTT telemetry / alert handlers on the backend; the display UI only reads them.
+- Logs are stored in the `device_logs` PostgreSQL table (see schema below).
+
+**PostgreSQL: `device_logs` table:**
+```sql
+CREATE TABLE device_logs (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  device_id       UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  type            VARCHAR(30) NOT NULL,
+  occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  smoke_pct       SMALLINT,
+  temp_celsius    REAL,
+  humidity_pct    SMALLINT,
+  person_detected BOOLEAN,
+  power_source    VARCHAR(10) CHECK (power_source IN ('mains','battery')),
+  battery_pct     SMALLINT,
+  battery_voltage REAL,
+  output_states   JSONB,
+  meta            JSONB NOT NULL DEFAULT '{}',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX ON device_logs (device_id, occurred_at DESC);
+CREATE INDEX ON device_logs (device_id, type);
+```
+
+---
+
 ### POST /api/alerts/:id/acknowledge
 **Request:**
 ```json
