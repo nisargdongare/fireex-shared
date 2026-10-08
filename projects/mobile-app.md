@@ -4,10 +4,56 @@
 
 A single React Native app for two user types: **facility users** (building occupants/managers) and **service technicians**. The role is determined post-authentication — the backend detects role from the registered phone number and returns it in the JWT. Same binary, UI adapts automatically.
 
-**Status:** Scaffolded (as of 2026-10-07) — navigation tree, auth flow, and all screens exist as working route files wired to real API calls; visual polish (icons, animations, pixel-level fidelity) still pending
+**Status:** Dashboard implemented with full multi-organization support (as of 2026-10-08)
 **Design:** Completed — [canvas](https://claude.ai/artifact/TFP8dCVRFBC61pEdJvKGW6)
 **Repo:** `~/Documents/Software_projects/fireex-mobile`
 **Platform:** iOS + Android (+ web via Expo, for faster iteration)
+
+---
+
+## Current Implementation Status
+
+### ✅ Completed
+
+**Authentication & JWT:**
+- Login with phone + OTP
+- JWT token contains user data and organizations array
+- Token refresh with refresh token
+- Automatic bearer token in API calls
+- Multi-organization support with `organizations: [{ _id, name }]` array
+
+**Dashboard Screen:**
+- Organization selector dropdown (shows org names only)
+- Address display with pin icon
+- Device fetching via `/api/devices?orgId={orgId}`
+- Device grouping by room (floor + room name)
+- Status calculation (worst device status per room)
+- Status animations (emergency ring pulse, overdue opacity pulse)
+- Real-time search across rooms and devices
+- Status pills with counts (emergency, overdue, issue, armed, offline)
+- Room cards with device count and status badge
+- Bottom tab bar (Home active, Chat, Settings placeholders)
+- Loading states and error handling
+
+**Components Built:**
+- DashboardHeader (org selector + notifications/profile)
+- OrganizationSelector (multi-org dropdown)
+- BuildingSelector (address display)
+- StatusPill & StatusBadge (status indicators)
+- RoomCard (room list items)
+- SearchBar (real-time search)
+- BottomTabBar (navigation)
+- StatusDot (animated status indicators)
+
+### 🔄 In Progress / Next Steps
+
+- [ ] RoomDevicesScreen - tap room to see devices
+- [ ] DeviceDetailScreen - sensor readings and controls
+- [ ] ChatScreen & SettingsScreen
+- [ ] Device control endpoints (fan, buzzer, arm)
+- [ ] WebSocket for live telemetry
+- [ ] Emergency alert screen
+- [ ] Offline support with caching
 
 ---
 
@@ -56,6 +102,27 @@ Status badges are pill-shaped: `border-radius: 20px`, `padding: 6–7px 11–12p
 
 ---
 
+## Multi-Organization Support
+
+**JWT Token Structure:**
+```json
+{
+  "organizations": [
+    { "_id": "6ac7a6c700f6cbb00c86bfba", "name": "FireEx Services" },
+    { "_id": "6ac7a6c800f6cbb00c86bfc6", "name": "Emergency Response Unit" }
+  ]
+}
+```
+
+**Dashboard Flow:**
+1. User has access to multiple organizations
+2. Organization selector dropdown displays org names
+3. Selecting an organization triggers API call with orgId
+4. Data refreshes for selected organization
+5. First organization selected by default
+
+---
+
 ## Role Detection Flow
 
 ```
@@ -63,13 +130,11 @@ App launch
   → Check stored JWT (MMKV)
   → If none: show Login screen
   → OTP verified → backend returns JWT with role
-  → Store JWT
+  → Store JWT (with organizations array)
   → Route based on role:
-      facility_user   → Dashboard (UserTabs)
+      user            → Dashboard (UserTabs)
       technician      → MaintenanceDashboard (TechTabs)
 ```
-
-OTP screen has a **prototype-only** role picker (2 buttons: "Facility user" / "Service technician"). In production this section is hidden — routing is automatic from the JWT.
 
 ---
 
@@ -82,10 +147,10 @@ RootNavigator (Stack)
   │     └── OTPVerifyScreen
   │
   └── AppStack (authenticated)
-        ├── UserTabs (role: facility_user)
-        │     ├── HomeTab → DashboardScreen
-        │     ├── ChatTab → SupportScreen
-        │     └── SettingsTab → SettingsScreen
+        ├── UserTabs (role: user)
+        │     ├── HomeTab → DashboardScreen ✅
+        │     ├── ChatTab → SupportScreen (placeholder)
+        │     └── SettingsTab → SettingsScreen (placeholder)
         │                     └── ProfileScreen
         │
         └── TechnicianTabs (role: technician)
@@ -98,173 +163,78 @@ Bottom nav (technician): Tickets (single primary view)
 
 ---
 
-## Screens — Facility User Mode
+## DashboardScreen Layout
 
-### LoginScreen
-- FireEx flame logo (52×52, `#C2410C`, `border-radius: 16px`)
-- Manrope 800 "FireEx" wordmark + tagline "Fire & smoke safety, in your pocket."
-- Country code pill (+91) + phone number input, side by side
-- Helper text: "Your number must already be registered with FireEx."
-- "Send OTP" primary button → navigate to OTPVerifyScreen
-- Terms footer
-
-### OTPVerifyScreen
-- Back button to LoginScreen
-- "Enter the code" heading with phone number shown
-- 6 individual `maxlength="1"` `type="tel"` inputs (46×56px each, gap 8px)
-- "Change number" link (→ LoginScreen) + "Resend code" link (orange)
-- Prototype role-picker section (hidden in production)
-- "Verify & continue" button: routes to DashboardScreen (facility_user) or MaintenanceDashboardScreen (technician)
-
-### DashboardScreen
-- Header: "Home" label + "FireEx" title + notification bell (with red dot badge) + profile icon
-- Building selector: location pin icon + building name + chevron (tappable to switch building)
-- Status strip (horizontal scroll, pill badges): Emergency count, Overdue count, Issue count, Armed count, Offline count — each with correct color + animation
-- Search bar: "Search rooms or devices"
-- "Rooms" section heading
-- Rooms list: each row is a card (18px radius) with:
-  - Colored icon square (status-colored bg, room icon in stroke SVG)
-  - Room name + device count
-  - Status badge (worst status in that room)
-  - Ordered worst-to-best status
-- Tap room → RoomDevicesScreen
-
-### RoomDevicesScreen
-- Back to Dashboard
-- Header: room name + "N devices · Building name"
-- Mini status strip (count-only pills, no labels)
-- Devices list: ordered worst-to-best, each card shows:
-  - Status-colored icon square (server/rack SVG icon)
-  - Device name (e.g. "Rack Row 3 — Unit 04A3")
-  - Status subtitle (e.g. "Smoke high · 68°C", "Service overdue 19 days", "Last seen 3h ago", "Smoke 2% · 21°C")
-  - Status badge
-- Tap device → DeviceDetailScreen
-- Offline cards: 65% opacity
-
-### DeviceDetailScreen
-- Back button + device name header + current status badge
-- 2×2 sensor reading grid (cards): Smoke level (%), Temperature (°C), Humidity (%RH), Battery backup (%)
-  - Each card: metric icon, large Manrope value, label
-- **Controls section** (grouped border-radius list):
-  - Exhaust fan toggle (off by default)
-  - Mute buzzer toggle (off by default)
-  - Armed toggle (green when on)
-- "Request maintenance" outline button → SupportScreen
-- Helper text: "Sprinkler reset and other physical servicing need a technician visit."
-- **Device details** read-only table: Device ID, Firmware version, Wi-Fi SSID + signal, GSM backup carrier + bars, Smoke sensor model + status, Last synced
-- **Recent activity** list: timestamped events (e.g. "Armed by Priya", "Connectivity restored")
-
-### EmergencyAlertScreen
-- Full-screen `#B3261E` red background
-- Close (×) button top-right (returns to Dashboard)
-- Flame icon in frosted circle
-- "FIREEX ALERT" label (caps, 80% white, letter-spacing)
-- "Fire detected" heading (Manrope 800, 30px)
-- Location line: "Kitchen · FireEx 4F2A · Just now"
-- 3-column stat row: Smoke level, Temp (°C), Sprinkler status (Active/Inactive)
-- Primary CTA: "Call emergency contact" white button with red text + phone icon
-- Secondary CTA: "View live status" (outline, white border, returns to DeviceDetail)
-- Tertiary: "Mark as false alarm" text link
-
-### SettingsScreen
-- Page title "Settings"
-- Profile row card (avatar initials, name, designation + phone) → ProfileScreen
-- **HOUSEHOLD section**: member list (Owner badge, Member badge) + "Invite a member" dashed-circle add button
-- **EMERGENCY CONTACTS section**: "Local fire department — 101" + "Add emergency contact" button
-- **GENERAL section**: Alert notifications toggle (on), Help & support link → SupportScreen, Log out → LoginScreen
-- Bottom nav tabs
-
-### SupportScreen (Chat triage)
-- Chat-style header: FireEx logo + "FireEx Support" + "Usually replies in a few minutes"
-- First message: "Is this a fire emergency happening right now?"
-- Two reply buttons:
-  - "Yes — it's an emergency" (red `#B3261E`) → shows "Please don't wait on chat — call for help right now" + "Call emergency contact" red button + "View live device status" link + "This was a mistake — start over"
-  - "No, I need help with something else" → shows menu of 5 options: Device setup / Technical issue / Schedule a service visit / Billing & account / Something else → all lead to "Request recorded" confirmation message
-- "Start a new request" link resets the chat
-
-### ProfileScreen
-- Back to Settings + Edit button (pencil icon)
-- Avatar circle (initials, `#C2410C` bg)
-- Name + designation subtitle
-- **WORK DETAILS**: Designation, Department, Employee ID, Site
-- **CONTACT**: Mobile number (with green "Verified" pill), Email
-- **ACCESS**: Household role (Owner / Member)
+```
+┌─────────────────────────────────┐
+│  Header: Notifications/Profile  │
+├─────────────────────────────────┤
+│ Org Selector (if multi-org)     │
+├─────────────────────────────────┤
+│ 📍 Organization Address         │
+├─────────────────────────────────┤
+│ [Emergency] [Overdue] [Issue]   │ ← Status Pills
+│ [Armed] [Offline]               │
+├─────────────────────────────────┤
+│ Search rooms or devices         │
+├─────────────────────────────────┤
+│ Rooms                           │
+│ ┌─────────────────────────────┐ │
+│ │ Server Wing      14 devices │ │ ← Emergency
+│ └─────────────────────────────┘ │
+│ ┌─────────────────────────────┐ │
+│ │ Production Floor  22 devices│ │ ← Overdue
+│ └─────────────────────────────┘ │
+│ ... (ordered worst to best)      │
+├─────────────────────────────────┤
+│ Home | Chat | Settings          │ ← Bottom Tabs
+└─────────────────────────────────┘
+```
 
 ---
 
-## Screens — Technician Mode
+## API: GET /api/devices
 
-Technician mode is indicated by a "TECHNICIAN MODE" dark pill badge (`#1C1A17` bg, white text) below the header on the MaintenanceDashboard.
+**Query Params:**
+- `orgId` (optional) - Organization ID to fetch devices for specific organization
 
-### MaintenanceDashboardScreen
-- Header: "Tickets" label + "FireEx" title + profile icon
-- TECHNICIAN MODE badge (dark pill)
-- Status strip: Critical (red ring pulse), In progress (orange breathing), Open (yellow static), On hold (gray)
-- Search bar: "Search tickets, rooms, devices"
-- "Assigned to you" section heading
-- Ticket list cards, each showing:
-  - Status-colored icon square (wrench/tool SVG icon)
-  - Ticket number + department (e.g. "TCKT-4821 · IT Infrastructure")
-  - Ticket title (e.g. "Sprinkler valve fault — Server Wing")
-  - Relative time (e.g. "12 min ago", "Started 40 min ago")
-  - Status badge
-- Resolved tickets: 65% opacity
-- Tap maintenance ticket → TicketDetailScreen
-- Tap new-device ticket → TicketDetailNewDeviceScreen
-
-### TicketDetailScreen (maintenance type)
-- Back to MaintenanceDashboard
-- Ticket number + department/location + status badge in header
-- **Info card**: title, description, Raised by, Type, Department, Location, Created
-- **Maintenance code flow** (stateful, 4 states):
-  1. **Idle**: "Generate maintenance code" primary button + "Mark in progress" outline button
-  2. **Code generated**: Shows 6-digit code (e.g. "482 193") in Manrope 800 large type, instruction "Enter this code on the device's own display within 10 minutes", animated orange dot + "Waiting for device confirmation…" — plus prototype buttons to simulate Confirmed/Failed
-  3. **Confirmed**: Green success banner "Device confirmed maintenance mode" + "Start work checklist" button → TicketInProgressScreen
-  4. **Failed**: Yellow warning banner "Device did not confirm" + "Generate new code" button
-- **Department devices** list below the code flow: all devices in the same department, with status badges (same 5-state system)
-
-### TicketInProgressScreen
-- Back to TicketDetail
-- Ticket number + title + "In progress" badge (orange, breathing)
-- **Checklist**: "N of 5 complete" counter + grouped list of checkboxes
-  - Each item: 22×22px checkbox (rounded 7px), tappable toggle
-  - Checked state: `#1E7A34` fill, white checkmark, text strikethrough + gray
-  - Unchecked: `#D9D9D5` border, white fill
-  - "Device confirmed maintenance mode" item: pre-checked, non-interactive (done via code flow)
-- **Comments section**: existing comments (name + timestamp + text) + add comment textarea
-- **Close ticket** row: "Resolved" green button + "Close with issue" outline amber button
-  - Helper text: "Use 'Close with issue' if the fault couldn't be fully fixed — it stays flagged for follow-up."
-
-### TicketDetailNewDeviceScreen (new device installation type)
-- Same header pattern
-- Info card: title, description, Raised by, Type, Department, Location, Created
-- Single "Add device" primary button → AddDeviceScreen
-- Helper text: "The ticket closes automatically once the new device is paired and registered."
-
-### AddDeviceScreen (technician only)
-Two steps, each full-screen:
-
-**Step 1 — BLE Scan:**
-- Back to TicketDetailNewDeviceScreen
-- "Add a device" heading
-- Instruction: "Turn on Bluetooth and stay close to the FireEx unit."
-- Animated BLE pulse: orange circle expanding outward (CSS `@keyframes pulse`)
-- "SCANNING FOR DEVICES…" label
-- **NEARBY** section:
-  - Available device card (highlighted orange border): device name + "Signal strong" + "Pair" button → go to Step 2
-  - Out-of-range device (65% opacity, "Signal weak")
-
-**Step 2 — Assign location:**
-- Back button returns to Step 1
-- Paired device confirmed row (green checkmark)
-- "Where is this device being installed?"
-- 3 selector rows (Floor, Department, Room): each opens a **bottom-sheet popup** on tap
-  - Bottom sheet: drag indicator, title, list of options (tappable full-width rows)
-  - Floor options: Ground Floor, 1st Floor, 2nd Floor, Basement
-  - Department options: IT Infrastructure, Facilities, Operations, Manufacturing, Logistics
-  - Room options: Server Wing, Production Floor A, Warehouse B, Admin Offices, Loading Dock
-  - Tapping outside the sheet closes it
-- "Register device" primary button → returns to MaintenanceDashboardScreen (ticket auto-closes)
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "organization": {
+      "_id": "6ac7a6c700f6cbb00c86bfba",
+      "name": "FireEx Services",
+      "address": "123 Main Street",
+      "city": "New Delhi",
+      "state": "Delhi",
+      "buildingStructure": [
+        {
+          "floorsNo": 1,
+          "name": "Ground Floor",
+          "Rooms": [
+            { "roomNumber": "101", "name": "Main Office" }
+          ]
+        }
+      ]
+    },
+    "deviceList": [
+      {
+        "_id": "6ac7aa591e4c202f6f567c8e",
+        "deviceName": "Smoke Detector - Main Office",
+        "deviceType": "smoke_detector",
+        "floor": { "floorsNo": 1, "name": "Ground Floor" },
+        "room": { "roomNumber": "101", "name": "Main Office" },
+        "status": "active",
+        "isActive": true,
+        "location": "Ceiling near entrance",
+        "serialNumber": "SD-2024-001"
+      }
+    ]
+  }
+}
+```
 
 ---
 
@@ -277,6 +247,18 @@ Two steps, each full-screen:
 - Technician mode indicator: dark pill visible on MaintenanceDashboard header only
 - All datetime display: device locale format; store/send as ISO8601 UTC
 - Controls (fan, buzzer, arm): optimistic UI — toggle immediately, revert on API error
-- "Request maintenance" routes to SupportScreen with pre-selected context (device ID in params)
 - Sensor readings on DeviceDetail: live via WebSocket `device.telemetry` events while screen is open
 - Offline cards (device/ticket): use `opacity: 0.65` wrapper style
+
+---
+
+## Recent Changes (2026-10-08)
+
+✅ Updated JWT token handling for organizations array
+✅ Created OrganizationSelector component with org names
+✅ Updated BuildingSelector to show address only
+✅ Implemented device fetch with orgId parameter
+✅ Real-time search filtering for rooms and devices
+✅ Status animations with react-native-reanimated
+✅ All lint and type checks passing
+✅ Memory and documentation updated
