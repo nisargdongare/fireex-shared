@@ -1,36 +1,38 @@
 # FireEx Project Status
 
-Last updated: 2026-10-05
+Last updated: 2026-10-06
 
 ---
 
 ## System-wide Status: IN DEVELOPMENT
 
-`fireex-ui` (Display UI) is in active development with hardware bring-up complete and full screen set implemented. All other sub-projects remain in planning/design phase.
+`fireex-ui` (Display UI) is in active development with hardware bring-up complete and full screen set implemented. `fireex-backend` has a working route layer against MongoDB. All other sub-projects remain in planning/design phase.
 
 ---
 
 ## Sub-Project Status
 
 ### `fireex-backend` (Central Backend)
-**Status:** Not started
-**Repo:** Not created
+**Status:** In progress
+**Repo:** `~/Documents/Software_projects/fireex-backend`
 
 **What's done:**
-- Architecture designed (Fastify + Node.js + PostgreSQL + TimescaleDB + MongoDB)
+- Architecture: Fastify + Node.js + **MongoDB only** (via Mongoose) — see ADR-012. PostgreSQL/Prisma/TimescaleDB were dropped in favor of a single-database architecture.
 - API contracts documented (`api-contracts/rest-api.md`, `websocket-events.md`, `mqtt-topics.md`)
-- Data models designed (`data-models/`)
+- Data models designed and implemented as Mongoose schemas (`data-models/`, `src/db/mongo/models/`)
 - Service structure planned (`projects/backend.md`)
+- Auth routes implemented: OTP request/verify, refresh, logout (SMS dispatch still a TODO — logs OTP to console in dev)
+- Route handlers implemented for: users, devices (readings/logs/command), alerts, tickets, buildings, floors, rooms
+- RBAC decorator (`fastify.rbac`) and JWT auth plugin (`fastify.authenticate`) wired
 
 **Next steps:**
-1. Create repo `fireex-backend`
-2. Initialize PlatformIO project with TypeScript + Fastify
-3. Set up PostgreSQL + TimescaleDB (local Docker dev environment)
-4. Set up MongoDB (local Docker)
-5. Set up MQTT broker (Mosquitto local Docker)
-6. Implement auth (OTP request + verify + JWT)
-7. Implement device registration + MQTT bridge basics
-8. Implement alert handling
+1. `npm install` to pull in dependencies (now includes `dotenv`, `fastify-plugin`, no longer includes `prisma`/`@prisma/client`)
+2. Set up MongoDB (local Docker or Atlas) and populate `.env` from `.env.example`
+3. Set up MQTT broker (Mosquitto local Docker)
+4. Implement MQTT message handlers (`mqtt/handlers/*` — currently only connect/subscribe exists, no telemetry/alert/status/register/ack processing yet)
+5. Wire real SMS provider for OTP delivery
+6. Implement WebSocket event broadcasting (plugin registered, no broadcast logic yet)
+7. Extract route logic into `services/*.service.ts` as routes grow (currently business logic lives directly in route handlers)
 
 **Blockers:**
 - Cloud hosting decision pending (needed before production setup)
@@ -39,25 +41,35 @@ Last updated: 2026-10-05
 
 ---
 
-### `fireex-mobile` (React Native App)
-**Status:** Not started
-**Repo:** Not created
+### `fireex-mobile` (React Native App, via Expo)
+**Status:** Scaffolded — navigation + screens wired, needs backend running + visual polish
+**Repo:** `~/Documents/Software_projects/fireex-mobile`
 
 **What's done:**
-- Screen designs and navigation structure documented (`projects/mobile-app.md`)
-- API contracts available for integration planning
+- Expo SDK 57 project scaffolded (TypeScript, Expo Router, React Compiler on)
+- Decided: Expo managed workflow (not bare RN), Expo Router (not React Navigation v6), expo-secure-store + AsyncStorage (not MMKV), expo-notifications (not RN Firebase) — see `architecture/tech-stack.md` for rationale
+- Full route tree created for both roles, matching `projects/mobile-app.md` 1:1:
+  - `(auth)`: login, OTP verify (6-digit auto-advance)
+  - `(app)/(user)`: dashboard/rooms, room devices, device detail (live telemetry via WebSocket, optimistic controls), settings, profile, support chat triage
+  - `(app)/(technician)`: ticket list, ticket detail (maintenance-code flow + new-device variant), in-progress checklist, add-device BLE+bottom-sheet flow, profile
+  - `(app)/emergency/[alertId]`: full-screen red alert, outside tab chrome
+- Auth store (JWT in expo-secure-store, auto-refresh via axios interceptor), app store (AsyncStorage-persisted), WebSocket client with reconnect/backoff and foreground/background lifecycle handling
+- Design tokens (`src/constants/theme.ts`) mirror the design canvas colors/typography/status-badge system
+- `npx tsc --noEmit`, `npx expo lint`, `npx expo-doctor` all clean; `npx expo start --web` boots and bundles with 0 errors
+- `.mcp.json` added, pointing at `fireex-shared`'s MCP server
+- `.nvmrc` pinned to Node v22.21.1 (SDK 57 requires ≥20.19.4; machine's nvm default of 20.18.0 doesn't qualify)
 
 **Next steps:**
-1. Create repo `fireex-mobile`
-2. Initialize React Native project (bare workflow, TypeScript)
-3. Set up navigation structure (React Navigation)
-4. Set up Zustand stores
-5. Implement auth screens (phone number + OTP)
-6. Implement role-based home screen routing
-7. Connect to backend auth API
+1. Get `fireex-backend` running locally and point the app's `API_BASE_URL` at it; most screens currently call real endpoints but have never hit a live backend
+2. Visual polish pass: real stroke-SVG icons (room/device/wrench — currently colored placeholder squares), `pulseRedRing`/`pulseOrange` status animations, BLE pulse animation on Add Device
+3. Rooms currently derived client-side by grouping `/api/devices` by `room.id` — no dedicated `/api/rooms` endpoint exists yet; revisit if the backend adds one
+4. Wire `expo-notifications` registration + backend device-token endpoint (not yet implemented on either side)
+5. Decide on and wire a BLE library for the real Add Device scan step (currently a static mock list)
+6. Jest + React Native Testing Library setup (not started)
 
 **Blockers:**
-- Depends on backend auth endpoints being live (can mock in early dev)
+- Depends on backend running + reachable (currently points at `http://localhost:3000/api` in dev)
+- Note: all `id` fields from the backend are MongoDB ObjectId strings, not UUIDs — mobile types already reflect this
 
 ---
 
@@ -80,6 +92,7 @@ Last updated: 2026-10-05
 
 **Blockers:**
 - Depends on backend auth endpoints being live (can mock in early dev)
+- Note: all `id` fields from the backend are now MongoDB ObjectId strings, not UUIDs — don't assume UUID format client-side
 
 ---
 
@@ -105,7 +118,7 @@ Last updated: 2026-10-05
 5. Test alarm pre-emption end-to-end with real firmware
 
 **Blockers:**
-- MQTT broker not set up yet (backend not started)
+- MQTT broker not set up yet (backend MQTT handlers also not yet implemented)
 
 ---
 
@@ -143,6 +156,7 @@ Last updated: 2026-10-05
 
 | Decision | Impact | Owner | Due |
 |----------|--------|-------|-----|
+| Backend database | Persistence layer | — | **Resolved: MongoDB only, see ADR-012** |
 | MQTT broker selection | Backend + firmware setup | TBD | TBD |
 | Cloud hosting | Backend deployment | TBD | TBD |
 | SMS provider | OTP in production | TBD | TBD |
@@ -157,9 +171,9 @@ Last updated: 2026-10-05
 
 Recommended order to maximize parallel progress:
 
-1. **Backend auth** — everything else depends on it
-2. **Backend MQTT bridge** — firmware dev can proceed once this is ready
-3. **Firmware telemetry + alerts** — can test against local MQTT + dev backend
+1. **Backend auth** — done (OTP request/verify/refresh/logout implemented against MongoDB)
+2. **Backend MQTT bridge** — connect/subscribe done; message handlers (telemetry/alert/status/register/ack) still needed before firmware dev can integrate end-to-end
+3. **Firmware telemetry + alerts** — can test against local MQTT + dev backend once handlers above exist
 4. **Mobile auth flow** — unblocks mobile feature development
 5. **Web admin auth + dashboard** — unblocks admin portal development
 6. **Display UI main screen** — can start in parallel once hardware is available
@@ -172,3 +186,4 @@ Recommended order to maximize parallel progress:
 - This repo (`fireex-shared`) is the single source of truth for all cross-project decisions
 - All API changes must be reflected here before or alongside implementation
 - Hardware-related decisions (sensor models, pin assignments) should be confirmed by the hardware team and recorded in `decisions/architecture-decisions.md`
+- **2026-10-06: Backend persistence layer changed from PostgreSQL+TimescaleDB+MongoDB to MongoDB-only.** See ADR-012. All data-model docs, the REST API contract, system overview, and data-flow docs were updated to match. Any client project (mobile, web) that assumed UUID-format IDs from earlier doc versions should expect MongoDB ObjectId strings instead.

@@ -2,6 +2,8 @@
 
 This document describes how data moves through the FireEx system — from hardware sensors to databases to client applications.
 
+> **Database note (ADR-012):** all persistence below is MongoDB (via Mongoose), not PostgreSQL/TimescaleDB. Flows are otherwise unchanged.
+
 ---
 
 ## 1. Sensor Reading Flow (Normal Operation)
@@ -19,15 +21,15 @@ MQTT Broker
 Backend MQTT Bridge (Fastify service)
     │
     │  Validates payload
-    │  Writes to TimescaleDB (time-series sensor_readings hypertable)
-    │  Updates device's last_seen and current_state in PostgreSQL
+    │  Writes to MongoDB `sensor_readings` collection
+    │  Updates device's `lastSeenAt` and `status` fields on the `devices` collection
     ▼
-TimescaleDB + PostgreSQL
+MongoDB
 ```
 
 Mobile/Web clients query historical sensor data via REST:
 ```
-Client → GET /api/devices/{deviceId}/readings?from=...&to=... → Backend → TimescaleDB → Client
+Client → GET /api/devices/{deviceId}/readings?from=...&to=... → Backend → MongoDB (sensor_readings) → Client
 ```
 
 ---
@@ -47,7 +49,7 @@ MQTT Broker
     ▼
 Backend MQTT Bridge
     │
-    │  Creates Alert record in PostgreSQL
+    │  Creates an Alert document in MongoDB
     │  Broadcasts to all WebSocket subscribers for that building/dept
     │  Sends push notifications via FCM/APNs to relevant users
     │  Sends SMS to department admin and relevant technicians
@@ -55,7 +57,7 @@ Backend MQTT Bridge
 ┌──────────────────────────────────────────────────────┐
 │  Multiple parallel outputs:                          │
 │                                                      │
-│  PostgreSQL (alert record persisted)                 │
+│  MongoDB (alert document persisted)                  │
 │  WebSocket → Mobile App (real-time alert banner)     │
 │  WebSocket → Web Admin (real-time dashboard alert)   │
 │  FCM/APNs → Mobile push notification (background)   │
@@ -71,7 +73,7 @@ Technician (mobile app)
     ▼
 Backend
     │
-    │  Updates alert status to "acknowledged" in PostgreSQL
+    │  Updates alert status to "acknowledged" in MongoDB
     │  Publishes command to MQTT: fireex/devices/{deviceId}/command
     │  Broadcasts status update via WebSocket
     ▼
@@ -95,7 +97,7 @@ ESP32 Firmware
     │  Executes command
     │  Publishes acknowledgment to: fireex/devices/{deviceId}/ack
     ▼
-MQTT Broker → Backend (logs command execution)
+MQTT Broker → Backend (logs command execution to MongoDB audit_logs)
 ```
 
 ---
@@ -107,7 +109,7 @@ Super Admin (web admin)
     │
     │  POST /api/devices  (creates device record, generates deviceId + secret)
     ▼
-Backend → PostgreSQL (device record created, status: "unprovisioned")
+Backend → MongoDB (device document created, status: "unprovisioned")
     │
     │  Super admin programs deviceId + MQTT credentials into ESP32 via
     │  USB serial during manufacturing / installation setup
@@ -119,7 +121,7 @@ ESP32 Firmware
     ▼
 Backend
     │
-    │  Validates deviceId, marks device as "online" in PostgreSQL
+    │  Validates deviceId, marks device as "online" in MongoDB
     │  Returns device config (sensor thresholds, reporting interval)
     ▼
 ESP32 stores config in NVS flash
@@ -136,9 +138,9 @@ User (mobile or web)
     ▼
 Backend
     │
-    │  Looks up phone number in PostgreSQL users table
+    │  Looks up phone number in MongoDB `users` collection
     │  If not found → reject (no self-signup)
-    │  If found → generate 6-digit OTP, store with expiry (5 min)
+    │  If found → generate 6-digit OTP, store with expiry (5 min) in `otp_codes`
     │  Send OTP via SMS provider
     ▼
 SMS Provider → User's phone
@@ -150,7 +152,7 @@ User enters OTP
 Backend
     │
     │  Validates OTP
-    │  Determines user role from user record
+    │  Determines user role from user document
     │  Issues JWT access token (15 min) + refresh token (30 days)
     ▼
 Client stores tokens (httpOnly cookie for web, MMKV for mobile)
@@ -165,7 +167,7 @@ Trigger: alert acknowledged / scheduled maintenance / manual creation
     │
     │  POST /api/tickets  (created by system or admin)
     ▼
-Backend → PostgreSQL (ticket created, status: "open")
+Backend → MongoDB (ticket document created, status: "open")
     │
     │  Assigns to technician (auto by building assignment or manual)
     │  Push notification to assigned technician
@@ -176,7 +178,7 @@ Technician (mobile app)
     │  Performs inspection, fills checklist on mobile app
     │  PATCH /api/tickets/{ticketId}  (status updates, checklist items)
     ▼
-Backend → PostgreSQL (ticket updated)
+Backend → MongoDB (ticket document updated — checklist/comments/attachments are embedded arrays, updated in place)
     │
     │  If resolved → notifies department admin via WebSocket + push
     │  If parts needed → ticket status: "pending_parts"
@@ -212,14 +214,15 @@ Client receives event, updates UI state immediately
 
 | Data type | Store | Retention |
 |-----------|-------|-----------|
-| User accounts, roles | PostgreSQL | Permanent |
-| Buildings, floors, rooms | PostgreSQL | Permanent |
-| Device registry, config | PostgreSQL | Permanent |
-| Sensor readings (time-series) | TimescaleDB | 1 year (configurable) |
-| Active alerts | PostgreSQL | Permanent |
-| Alert history | PostgreSQL | Permanent |
-| Maintenance tickets | PostgreSQL | Permanent |
-| Audit logs | MongoDB | 90 days (configurable) |
-| Device config snapshots | MongoDB | Last 10 versions |
-| OTP codes | PostgreSQL (or Redis TBD) | 5 minutes TTL |
-| JWT refresh tokens | PostgreSQL (or Redis TBD) | 30 days |
+| User accounts, roles | MongoDB (`users`) | Permanent |
+| Buildings, floors, rooms | MongoDB (`buildings`, `floors`, `rooms`) | Permanent |
+| Device registry, config | MongoDB (`devices`, incl. embedded `config`) | Permanent |
+| Sensor readings (time-series) | MongoDB (`sensor_readings`) | 1 year (configurable, via TTL index or scheduled cleanup) |
+| Active alerts | MongoDB (`alerts`) | Permanent |
+| Alert history | MongoDB (`alerts`) | Permanent |
+| Maintenance tickets | MongoDB (`tickets`, incl. embedded checklist/comments/attachments) | Permanent |
+| Device event logs | MongoDB (`device_logs`) | Permanent (configurable) |
+| Audit logs | MongoDB (`audit_logs`) | 90 days (configurable) |
+| Device config snapshots | MongoDB (`device_config_snapshots`) | Last 10 versions |
+| OTP codes | MongoDB (`otp_codes`) | 5 minutes TTL |
+| JWT refresh tokens | MongoDB (`refresh_tokens`) | 30 days |

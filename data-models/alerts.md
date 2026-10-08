@@ -2,15 +2,17 @@
 
 An alert is raised when a device detects a condition that exceeds a configured threshold. Alerts are the most critical data type in the system — they must propagate reliably across all channels and never be silently dropped.
 
+> **Database note (ADR-012):** All collections below are MongoDB collections accessed via Mongoose, not PostgreSQL tables. `id` fields are MongoDB ObjectId strings, not UUIDs. `alert_notifications` (previously a separate table) is now an embedded array on the alert document itself — see below.
+
 ---
 
 ## Alert Types
 
 | Type | Trigger |
 |------|---------|
-| `smoke` | Smoke level exceeds `smoke_threshold` in device config |
-| `co` | CO level exceeds `co_threshold_ppm` in device config |
-| `temperature` | Temperature exceeds `temp_threshold_celsius` in device config |
+| `smoke` | Smoke level exceeds `smokeThreshold` in device config |
+| `co` | CO level exceeds `coThresholdPpm` in device config |
+| `temperature` | Temperature exceeds `tempThresholdCelsius` in device config |
 | `device_offline` | Device stops reporting for longer than `offline_threshold` (default 2 min) |
 | `battery_low` | Battery backup below 20% |
 | `tamper` | Device physically tampered with (cover opened) — TBD sensor |
@@ -46,35 +48,32 @@ false_alarm (can be set during acknowledge step)
 
 ---
 
-## PostgreSQL: `alerts` Table
+## MongoDB: `alerts` Collection
 
-```sql
-CREATE TABLE alerts (
-  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  device_id           UUID NOT NULL REFERENCES devices(id),
-  type                VARCHAR(20) NOT NULL
-                      CHECK (type IN ('smoke','co','temperature','device_offline','battery_low','tamper','test')),
-  severity            VARCHAR(10) NOT NULL
-                      CHECK (severity IN ('critical','high','warning','info')),
-  status              VARCHAR(15) NOT NULL DEFAULT 'active'
-                      CHECK (status IN ('active','acknowledged','resolved','false_alarm')),
-  triggered_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  acknowledged_at     TIMESTAMPTZ,
-  acknowledged_by     UUID REFERENCES users(id),
-  resolved_at         TIMESTAMPTZ,
-  resolved_by         UUID REFERENCES users(id),   -- can be NULL if auto-resolved by device
-  sensor_values       JSONB NOT NULL,               -- snapshot of readings at trigger time
-  threshold_values    JSONB NOT NULL,               -- snapshot of config thresholds at trigger time
-  notes               TEXT,                         -- filled during acknowledge
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX ON alerts (device_id, triggered_at DESC);
-CREATE INDEX ON alerts (status) WHERE status = 'active';
+```ts
+{
+  _id:               ObjectId,
+  deviceId:          ObjectId,   // ref: devices, indexed
+  type:              'smoke' | 'co' | 'temperature' | 'device_offline' | 'battery_low' | 'tamper' | 'test',
+  severity:          'critical' | 'high' | 'warning' | 'info',
+  status:            'active' | 'acknowledged' | 'resolved' | 'false_alarm',  // default 'active', indexed
+  triggeredAt:       Date,
+  acknowledgedAt?:   Date,
+  acknowledgedBy?:   ObjectId,   // ref: users
+  resolvedAt?:       Date,
+  resolvedBy?:       ObjectId,   // ref: users — can be absent if auto-resolved by device
+  sensorValues:      Mixed,      // snapshot of readings at trigger time
+  thresholdValues:   Mixed,      // snapshot of config thresholds at trigger time
+  notes?:            string,     // filled during acknowledge
+  notifications:     [AlertNotification],  // embedded array, see below
+  createdAt:         Date,
+  updatedAt:         Date,
+}
 ```
 
-### `sensor_values` JSONB example:
+Compound index on `(deviceId, triggeredAt DESC)`. Index on `status` for fast active-alert lookups.
+
+### `sensorValues` example:
 ```json
 {
   "smokeLevel": 0.87,
@@ -84,7 +83,7 @@ CREATE INDEX ON alerts (status) WHERE status = 'active';
 }
 ```
 
-### `threshold_values` JSONB example:
+### `thresholdValues` example:
 ```json
 {
   "smokeThreshold": 0.5,
@@ -95,22 +94,18 @@ CREATE INDEX ON alerts (status) WHERE status = 'active';
 
 ---
 
-## PostgreSQL: `alert_notifications` Table
+## Embedded: `AlertNotification` (within `alerts.notifications[]`)
 
-Tracks every notification sent for an alert:
+Tracks every notification sent for an alert. Previously a separate `alert_notifications` table — now an embedded subdocument array, since notifications are always read/written alongside their parent alert and never queried independently.
 
-```sql
-CREATE TABLE alert_notifications (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  alert_id        UUID NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
-  channel         VARCHAR(20) NOT NULL
-                  CHECK (channel IN ('push','sms','websocket','email')),
-  recipient_id    UUID REFERENCES users(id),        -- NULL for broadcast
-  sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  delivery_status VARCHAR(20) DEFAULT 'sent'
-                  CHECK (delivery_status IN ('sent','delivered','failed')),
-  error_message   TEXT
-);
+```ts
+{
+  channel:         'push' | 'sms' | 'websocket' | 'email',
+  recipientId?:    ObjectId,   // ref: users — absent for broadcast
+  sentAt:          Date,
+  deliveryStatus:  'sent' | 'delivered' | 'failed',  // default 'sent'
+  errorMessage?:   string,
+}
 ```
 
 ---
@@ -119,7 +114,7 @@ CREATE TABLE alert_notifications (
 
 When an alert is created:
 
-1. **Identify affected scope**: get `department_id` from the device's room → floor → building → department chain
+1. **Identify affected scope**: get `departmentId` from the device's room → floor → building → department chain
 2. **Notify** all users in that department (role-filtered):
    - `critical` / `high`: notify `end_user`, `technician`, `dept_admin` in the department + all `super_admin`
    - `warning`: notify `technician`, `dept_admin` in the department + all `super_admin`
@@ -153,8 +148,8 @@ Sent to all subscribers of the affected department/building immediately when an 
 {
   "type": "alert.new",
   "payload": {
-    "alertId": "uuid",
-    "deviceId": "uuid",
+    "alertId": "665f1a2b9e1c4a0012abc111",
+    "deviceId": "665f1a2b9e1c4a0012abc222",
     "deviceCode": "FX-0042",
     "roomName": "Server Room 3B",
     "buildingName": "Block A",

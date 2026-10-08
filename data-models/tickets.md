@@ -2,6 +2,8 @@
 
 Maintenance tickets track all device inspection, repair, and maintenance work. They are created either automatically (triggered by an alert) or manually by a department admin or super admin.
 
+> **Database note (ADR-012):** All collections below are MongoDB collections accessed via Mongoose, not PostgreSQL tables. `id` fields are MongoDB ObjectId strings, not UUIDs. `ticket_checklist_items`, `ticket_comments`, and `ticket_attachments` are now embedded arrays on the ticket document itself — see below.
+
 ---
 
 ## Ticket Types
@@ -34,52 +36,51 @@ cancelled           pending_parts → in_progress → resolved
 
 ---
 
-## PostgreSQL: `tickets` Table
+## MongoDB: `tickets` Collection
 
-```sql
-CREATE TABLE tickets (
-  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  ticket_number       VARCHAR(20) NOT NULL UNIQUE,   -- human-readable: "TCKT-4821"
-  type                VARCHAR(30) NOT NULL
-                      CHECK (type IN ('alert_response','scheduled_maintenance','corrective_maintenance','installation')),
-  status              VARCHAR(20) NOT NULL DEFAULT 'open'
-                      CHECK (status IN ('open','assigned','in_progress','pending_parts','resolved','cancelled')),
-  priority            VARCHAR(10) NOT NULL DEFAULT 'normal'
-                      CHECK (priority IN ('low','normal','high','critical')),
-  device_id           UUID NOT NULL REFERENCES devices(id),
-  alert_id            UUID REFERENCES alerts(id),    -- if triggered by an alert
-  assigned_to         UUID REFERENCES users(id),     -- technician
-  created_by          UUID NOT NULL REFERENCES users(id),
-  title               VARCHAR(255) NOT NULL,
-  description         TEXT,
-  resolution_notes    TEXT,
-  scheduled_for       TIMESTAMPTZ,                   -- for scheduled maintenance
-  started_at          TIMESTAMPTZ,
-  resolved_at         TIMESTAMPTZ,
-  due_at              TIMESTAMPTZ,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+```ts
+{
+  _id:               ObjectId,
+  ticketNumber:      string,     // human-readable: "TKT-0042" — unique index
+  type:              'alert_response' | 'scheduled_maintenance' | 'corrective_maintenance' | 'installation',
+  status:            'open' | 'assigned' | 'in_progress' | 'pending_parts' | 'resolved' | 'cancelled',  // default 'open', indexed
+  priority:          'low' | 'normal' | 'high' | 'critical',  // default 'normal'
+  deviceId:          ObjectId,   // ref: devices, indexed
+  alertId?:          ObjectId,   // ref: alerts — if triggered by an alert
+  assignedTo?:       ObjectId,   // ref: users (technician), indexed
+  createdBy:         ObjectId,   // ref: users
+  title:             string,
+  description?:      string,
+  resolutionNotes?:  string,
+  scheduledFor?:     Date,       // for scheduled maintenance
+  startedAt?:        Date,
+  resolvedAt?:       Date,
+  dueAt?:            Date,
+  checklist:         [ChecklistItem],    // embedded array, see below
+  comments:          [TicketComment],    // embedded array, see below
+  attachments:       [TicketAttachment], // embedded array, see below
+  createdAt:         Date,
+  updatedAt:         Date,
+}
 ```
 
 ---
 
-## PostgreSQL: `ticket_checklist_items` Table
+## Embedded: `ChecklistItem` (within `tickets.checklist[]`)
 
-Each ticket has a checklist that the technician completes during the inspection:
+Each ticket has a checklist that the technician completes during the inspection. Previously a separate `ticket_checklist_items` table — now an embedded subdocument array, since checklist items are always fetched and updated together with their parent ticket (see `PATCH /api/tickets/:id`).
 
-```sql
-CREATE TABLE ticket_checklist_items (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  ticket_id       UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-  item_order      SMALLINT NOT NULL,
-  label           VARCHAR(255) NOT NULL,        -- e.g. "Test smoke detector sensitivity"
-  is_required     BOOLEAN NOT NULL DEFAULT true,
-  is_checked      BOOLEAN NOT NULL DEFAULT false,
-  checked_at      TIMESTAMPTZ,
-  checked_by      UUID REFERENCES users(id),
-  notes           TEXT
-);
+```ts
+{
+  _id:          ObjectId,    // Mongoose auto-generates a subdocument _id, used to target updates
+  itemOrder:    number,
+  label:        string,      // e.g. "Test smoke detector sensitivity"
+  isRequired:   boolean,     // default true
+  isChecked:    boolean,     // default false
+  checkedAt?:   Date,
+  checkedBy?:   ObjectId,    // ref: users
+  notes?:       string,
+}
 ```
 
 ### Default Checklist by Ticket Type
@@ -114,43 +115,40 @@ CREATE TABLE ticket_checklist_items (
 
 ---
 
-## PostgreSQL: `ticket_comments` Table
+## Embedded: `TicketComment` (within `tickets.comments[]`)
 
-```sql
-CREATE TABLE ticket_comments (
-  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  ticket_id   UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-  author_id   UUID NOT NULL REFERENCES users(id),
-  body        TEXT NOT NULL,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+```ts
+{
+  _id:        ObjectId,
+  authorId:   ObjectId,   // ref: users
+  body:       string,
+  createdAt:  Date,
+}
 ```
 
 ---
 
-## PostgreSQL: `ticket_attachments` Table
+## Embedded: `TicketAttachment` (within `tickets.attachments[]`)
 
 Photos taken during inspection:
 
-```sql
-CREATE TABLE ticket_attachments (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  ticket_id       UUID NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-  uploaded_by     UUID NOT NULL REFERENCES users(id),
-  file_url        TEXT NOT NULL,            -- cloud storage URL
-  file_type       VARCHAR(50),              -- image/jpeg, image/png, etc.
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+```ts
+{
+  _id:          ObjectId,
+  uploadedBy:   ObjectId,   // ref: users
+  fileUrl:      string,     // cloud storage URL
+  fileType?:    string,     // image/jpeg, image/png, etc.
+  createdAt:    Date,
+}
 ```
 
 ---
 
 ## Ticket Number Generation
 
-Format: `TCKT-NNNN` (e.g., `TCKT-4821`)
-- Sequential 4-digit counter, no year prefix
-- Zero-padded to 4 digits minimum
-- Generated in backend at ticket creation, never by the client
+Format: `TKT-NNNN` (e.g., `TKT-0042`)
+- Sequential 4-digit counter, zero-padded to 4 digits minimum
+- Generated in backend at ticket creation (currently derived from collection document count; consider a dedicated counter document if concurrent creation becomes an issue, since MongoDB has no auto-increment sequence primitive), never by the client
 
 ---
 

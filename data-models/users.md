@@ -2,6 +2,8 @@
 
 All users in FireEx are pre-registered — there is no self-signup. A user's role is determined by their record in the database, set by an admin at registration time.
 
+> **Database note (ADR-012):** All collections below are MongoDB collections accessed via Mongoose, not PostgreSQL tables. `id` fields are MongoDB ObjectId strings, not UUIDs. Foreign-key-style fields (`departmentId`, `createdBy`, etc.) are ObjectId references, validated and populated in application code — there is no database-level `FOREIGN KEY` constraint.
+
 ---
 
 ## Roles
@@ -15,88 +17,88 @@ All users in FireEx are pre-registered — there is no self-signup. A user's rol
 
 ---
 
-## PostgreSQL: `users` Table
+## MongoDB: `users` Collection
 
-```sql
-CREATE TABLE users (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  phone_number    VARCHAR(20) NOT NULL UNIQUE,  -- E.164 format: +1234567890
-  full_name       VARCHAR(255) NOT NULL,
-  email           VARCHAR(255),                 -- optional; shown on Profile screen
-  role            VARCHAR(20) NOT NULL CHECK (role IN ('end_user', 'technician', 'dept_admin', 'super_admin')),
-  department_id   UUID REFERENCES departments(id) ON DELETE SET NULL,  -- NULL for super_admin
-  designation     VARCHAR(255),                 -- job title e.g. "Senior Fire Safety Officer"
-  employee_id     VARCHAR(100),                 -- org employee ID shown on Profile screen
-  site            VARCHAR(255),                 -- physical site / campus name
-  household_role  VARCHAR(20) CHECK (household_role IN ('owner', 'member')),  -- for building-level membership
-  is_active       BOOLEAN NOT NULL DEFAULT true,
-  created_by      UUID REFERENCES users(id),    -- which admin registered this user
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+```ts
+{
+  _id:            ObjectId,
+  phoneNumber:    string,     // E.164 format: +1234567890 — unique index
+  fullName:       string,
+  email?:         string,     // optional; shown on Profile screen
+  role:           'end_user' | 'technician' | 'dept_admin' | 'super_admin',
+  departmentId?:  ObjectId,   // ref: departments — NULL for super_admin
+  designation?:   string,     // job title e.g. "Senior Fire Safety Officer"
+  employeeId?:    string,     // org employee ID shown on Profile screen
+  site?:          string,     // physical site / campus name
+  householdRole?: 'owner' | 'member',  // for building-level membership
+  isActive:       boolean,    // default true
+  createdBy?:     ObjectId,   // ref: users — which admin registered this user
+  createdAt:      Date,
+  updatedAt:      Date,
+}
 ```
 
 ### Field Notes
-- `phone_number`: stored in E.164 format (e.g., `+911234567890`). This is the login identifier and is shown with "Verified" badge on Profile screen.
+- `phoneNumber`: stored in E.164 format (e.g., `+911234567890`). This is the login identifier and is shown with "Verified" badge on Profile screen. Unique index enforced via Mongoose schema + a unique MongoDB index.
 - `role`: a single role per user. Roles are not composable — a technician cannot also be a dept_admin.
-- `department_id`: required for `end_user`, `technician`, `dept_admin`. NULL for `super_admin`.
-- `designation`, `employee_id`, `site`: confirmed from Profile screen WORK DETAILS section.
+- `departmentId`: required for `end_user`, `technician`, `dept_admin`. Absent for `super_admin`.
+- `designation`, `employeeId`, `site`: confirmed from Profile screen WORK DETAILS section.
 - `email`: shown in CONTACT section of Profile screen; optional.
-- `household_role`: `owner` or `member` — determines whether the user can invite others to the building group. Shown in Profile ACCESS section.
-- `is_active`: soft-delete / deactivation mechanism. Deactivated users cannot log in.
+- `householdRole`: `owner` or `member` — determines whether the user can invite others to the building group. Shown in Profile ACCESS section.
+- `isActive`: soft-delete / deactivation mechanism. Deactivated users cannot log in.
 
 ---
 
-## PostgreSQL: `otp_codes` Table
+## MongoDB: `otp_codes` Collection
 
-```sql
-CREATE TABLE otp_codes (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  code            CHAR(6) NOT NULL,
-  expires_at      TIMESTAMPTZ NOT NULL,
-  used_at         TIMESTAMPTZ,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+```ts
+{
+  _id:        ObjectId,
+  userId:     ObjectId,   // ref: users, indexed
+  code:       string,     // bcrypt hash, 6-digit OTP
+  expiresAt:  Date,
+  usedAt?:    Date,
+  createdAt:  Date,
+}
 ```
 
 - OTPs expire in 5 minutes
-- Once used, `used_at` is set and the code cannot be reused
-- Max 3 active OTPs per user at a time (rate limiting at API level)
+- Once used, `usedAt` is set and the code cannot be reused
+- Max 3 active OTPs per user at a time (rate limiting at API level, enforced in application code)
 
 ---
 
-## PostgreSQL: `refresh_tokens` Table
+## MongoDB: `refresh_tokens` Collection
 
-```sql
-CREATE TABLE refresh_tokens (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  token_hash      VARCHAR(255) NOT NULL UNIQUE,  -- bcrypt hash of the token
-  device_id       VARCHAR(255),                  -- optional: mobile device identifier
-  expires_at      TIMESTAMPTZ NOT NULL,
-  revoked_at      TIMESTAMPTZ,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+```ts
+{
+  _id:         ObjectId,
+  userId:      ObjectId,   // ref: users, indexed
+  tokenHash:   string,     // bcrypt hash of the token — unique index
+  deviceId?:   string,     // optional: mobile device identifier
+  expiresAt:   Date,
+  revokedAt?:  Date,
+  createdAt:   Date,
+}
 ```
 
 - Refresh tokens expire in 30 days
-- Revoking a token sets `revoked_at`; backend checks this on every refresh
-- `device_id` allows "log out this device" functionality
+- Revoking a token sets `revokedAt`; backend checks this on every refresh
+- `deviceId` allows "log out this device" functionality
 
 ---
 
-## PostgreSQL: `departments` Table
+## MongoDB: `departments` Collection
 
-```sql
-CREATE TABLE departments (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name            VARCHAR(255) NOT NULL,
-  code            VARCHAR(50) NOT NULL UNIQUE,   -- short identifier e.g. "FIRE_DEPT_A"
-  is_active       BOOLEAN NOT NULL DEFAULT true,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+```ts
+{
+  _id:        ObjectId,
+  name:       string,
+  code:       string,    // short identifier e.g. "FIRE_DEPT_A" — unique index
+  isActive:   boolean,   // default true
+  createdAt:  Date,
+  updatedAt:  Date,
+}
 ```
 
 ---
@@ -107,15 +109,16 @@ After OTP verification, the backend issues a JWT with this payload:
 
 ```json
 {
-  "sub": "user-uuid",
+  "sub": "665f1a2b9e1c4a0012abcdef",
   "phone": "+911234567890",
   "role": "technician",
-  "departmentId": "dept-uuid",
+  "departmentId": "665f1a2b9e1c4a0012abcd01",
   "iat": 1700000000,
   "exp": 1700000900
 }
 ```
 
+- `sub` and `departmentId` are MongoDB ObjectId strings (24-char hex), not UUIDs.
 - Access token expires: 15 minutes
 - Refresh token expires: 30 days (stored as httpOnly cookie on web, MMKV on mobile)
 
@@ -129,7 +132,7 @@ After OTP verification, the backend issues a JWT with this payload:
 | `GET /api/users` | List all users (filterable by role, department) |
 | `GET /api/users/:id` | Get user by ID |
 | `PATCH /api/users/:id` | Update user details or role |
-| `DELETE /api/users/:id` | Deactivate user (soft delete, sets `is_active = false`) |
+| `DELETE /api/users/:id` | Deactivate user (soft delete, sets `isActive = false`) |
 
 See `api-contracts/rest-api.md` for full request/response shapes.
 

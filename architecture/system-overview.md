@@ -23,9 +23,9 @@ FireEx is a fire and smoke safety monitoring platform. It enables real-time dete
 │  ┌─────────────┐                       │  └────────────────┘  │   │
 │  │ MQTT Broker │◄─────────────────────►│                      │   │
 │  │   (TBD)     │                       │  ┌────────────────┐  │   │
-│  └─────────────┘                       │  │  PostgreSQL +  │  │   │
-│                                        │  │  TimescaleDB   │  │   │
-│                                        │  │  MongoDB       │  │   │
+│  └─────────────┘                       │  │   MongoDB      │  │   │
+│                                        │  │  (single DB,   │  │   │
+│                                        │  │  via Mongoose) │  │   │
 │                                        │  └────────────────┘  │   │
 │                                        └──────────┬───────────┘   │
 │                                                   │               │
@@ -66,7 +66,7 @@ FireEx is a fire and smoke safety monitoring platform. It enables real-time dete
 - Exposes REST API for CRUD operations and queries
 - Exposes WebSocket for real-time event push to mobile and web clients
 - Runs an MQTT bridge (subscribes to hardware topics, publishes commands)
-- Reads/writes PostgreSQL (relational data), TimescaleDB (sensor time-series), MongoDB (document data)
+- Reads/writes a single MongoDB database (via Mongoose) for all data — relational-style data (users, devices, buildings, tickets, alerts), time-series sensor readings, and document data (audit logs, config snapshots) all live in MongoDB collections. See `decisions/architecture-decisions.md` ADR-012.
 - Handles OTP generation and verification (no passwords)
 - Handles push notifications via FCM/APNs
 

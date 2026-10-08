@@ -4,10 +4,10 @@
 
 A single React Native app for two user types: **facility users** (building occupants/managers) and **service technicians**. The role is determined post-authentication — the backend detects role from the registered phone number and returns it in the JWT. Same binary, UI adapts automatically.
 
-**Status:** Not started (as of 2024-10-04)
+**Status:** Scaffolded (as of 2026-10-07) — navigation tree, auth flow, and all screens exist as working route files wired to real API calls; visual polish (icons, animations, pixel-level fidelity) still pending
 **Design:** Completed — [canvas](https://claude.ai/artifact/TFP8dCVRFBC61pEdJvKGW6)
-**Repo:** TBD
-**Platform:** iOS + Android
+**Repo:** `~/Documents/Software_projects/fireex-mobile`
+**Platform:** iOS + Android (+ web via Expo, for faster iteration)
 
 ---
 

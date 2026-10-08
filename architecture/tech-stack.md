@@ -16,10 +16,9 @@ All stack choices below are confirmed unless marked **TBD**.
 | Auth | JWT (access + refresh tokens) | Issued after OTP verification |
 | OTP delivery | SMS via provider TBD (Twilio / AWS SNS) | |
 | Push notifications | FCM (Android) + APNs (iOS) via `firebase-admin` | |
-| Primary DB | PostgreSQL | Users, devices, buildings, tickets, alerts |
-| Time-series DB | TimescaleDB (PostgreSQL extension) | Sensor readings hypertable |
-| Document DB | MongoDB | Flexible document storage (audit logs, config snapshots) |
-| ORM/Query | Prisma (PostgreSQL) + Mongoose (MongoDB) | |
+| Database | **MongoDB (single database for everything)** | See ADR-012. All data — users, devices, buildings, tickets, alerts, sensor readings, audit logs, config snapshots — lives in MongoDB. No PostgreSQL, no TimescaleDB. |
+| ORM/Query | Mongoose | All collections are Mongoose schemas/models under `src/db/mongo/models/` |
+| Time-series storage | Plain MongoDB collection (`sensor_readings`) | Compound index on `(deviceId, time DESC)`. Time-bucket aggregation done via the Mongo aggregation pipeline. Can upgrade to MongoDB's native `timeseries` collection type later if volume demands it. |
 | Validation | Zod | Schema validation on all incoming payloads |
 | Testing | Jest + Supertest | |
 | Process manager | PM2 | Production |
@@ -31,17 +30,21 @@ All stack choices below are confirmed unless marked **TBD**.
 
 | Layer | Choice | Notes |
 |-------|--------|-------|
-| Framework | React Native (bare, not Expo) | TBD whether to use Expo managed workflow |
+| Framework | React Native via Expo (managed workflow, SDK 57) | **Decided 2026-10-07** — switched from bare RN for simpler builds, OTA updates (EAS), and Expo Go iteration during early dev |
 | Language | TypeScript | |
-| Navigation | React Navigation v6 | Stack + Bottom Tab navigators |
+| Navigation | Expo Router (file-based) | **Switched from React Navigation v6** — idiomatic for Expo, built on React Navigation internally. Route groups: `(auth)`, `(app)/(user)`, `(app)/(technician)` |
 | State management | Zustand | Lightweight, no boilerplate |
-| API client | Axios | REST calls |
-| Real-time | WebSocket (native `WebSocket` API or `socket.io-client`) | Alert push |
-| Push notifications | React Native Firebase | FCM + APNs |
-| Local storage | MMKV | Fast key-value, replaces AsyncStorage |
+| API client | Axios | REST calls, with interceptor-based access-token refresh |
+| Real-time | WebSocket (native `WebSocket` API) | Alert push; reconnect with backoff per `api-contracts/websocket-events.md` |
+| Push notifications | `expo-notifications` | **Switched from React Native Firebase** — Expo-maintained, handles FCM (Android) + APNs (iOS). Remote push needs a dev build (unavailable in Expo Go on Android since SDK 53); local notifications work in Expo Go |
+| Local storage | `expo-secure-store` (tokens) + `@react-native-async-storage/async-storage` (general persisted state, via Zustand `persist`) | **Switched from MMKV** — MMKV is third-party, not in Expo's docs, and needs a dev build; Expo's own storage guide recommends this pairing instead |
 | Forms | React Hook Form + Zod | |
-| Styling | StyleSheet + NativeWind (TailwindCSS for RN) | TBD |
-| Testing | Jest + React Native Testing Library | |
+| Styling | StyleSheet (fixed light design system — no dark mode in the current design) | Design tokens in `src/constants/theme.ts` mirror the Figma/canvas spec in `projects/mobile-app.md` |
+| Testing | Jest + React Native Testing Library | Not yet set up |
+
+> Expo SDK APIs change every release — any session working on `fireex-mobile` should check `docs.expo.dev/versions/v<major>.0.0/` before assuming an API from training data, per the project's `AGENTS.md`.
+
+> Note: all IDs returned by the backend (`id` fields in API responses) are now MongoDB ObjectId strings (24-char hex), not UUIDs. No client-side format assumptions (e.g. UUID regex validation) should be made on these fields.
 
 ---
 
@@ -60,6 +63,8 @@ All stack choices below are confirmed unless marked **TBD**.
 | Forms | React Hook Form + Zod | |
 | Charts/dashboards | Recharts or Chart.js | TBD |
 | Testing | Jest + React Testing Library + Playwright (E2E) | |
+
+> Note: same ObjectId-string caveat as mobile — see above.
 
 ---
 
@@ -103,7 +108,7 @@ All stack choices below are confirmed unless marked **TBD**.
 | CI/CD | TBD | GitHub Actions |
 | Secrets management | TBD | AWS Secrets Manager or .env vault |
 | Monitoring | TBD | |
-| Database hosting | TBD | Managed Postgres with TimescaleDB extension |
+| Database hosting | TBD | Managed MongoDB (e.g. MongoDB Atlas) — no longer need a managed Postgres/TimescaleDB instance, see ADR-012 |
 
 ---
 

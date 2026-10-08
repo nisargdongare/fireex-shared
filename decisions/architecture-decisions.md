@@ -50,9 +50,9 @@ Alternatives considered: ...
 
 ---
 
-## ADR-004: TimescaleDB for Sensor Readings
+## ADR-004: TimescaleDB for Sensor Readings — SUPERSEDED BY ADR-012
 **Date:** 2024-10-04
-**Status:** decided
+**Status:** superseded
 
 **Decision:** Sensor time-series data goes into a TimescaleDB hypertable, not a plain PostgreSQL table or a separate time-series DB (InfluxDB, etc.).
 
@@ -60,17 +60,21 @@ Alternatives considered: ...
 
 **Alternatives considered:** InfluxDB, plain PostgreSQL table. InfluxDB rejected (extra service). Plain PG rejected (slow on large time-series without partitioning).
 
+**Superseded:** See ADR-012 — the project moved to an all-MongoDB persistence layer, dropping PostgreSQL/TimescaleDB entirely. `sensor_readings` is now a plain MongoDB collection.
+
 ---
 
-## ADR-005: MongoDB for Audit Logs and Config Snapshots
+## ADR-005: MongoDB for Audit Logs and Config Snapshots — SUPERSEDED BY ADR-012
 **Date:** 2024-10-04
-**Status:** decided
+**Status:** superseded
 
 **Decision:** Audit logs and device config snapshots are stored in MongoDB, not PostgreSQL.
 
 **Reason:** These are document-shaped records with variable structure (audit log payloads differ by action type). MongoDB makes it easy to store them without upfront schema design. PostgreSQL JSONB could work but is more cumbersome for document-centric queries.
 
 **Alternatives considered:** PostgreSQL with JSONB. Possible, but MongoDB is a better fit for document-centric, schema-flexible data.
+
+**Superseded:** See ADR-012 — this decision is now moot since all data lives in MongoDB, not just document-shaped data.
 
 ---
 
@@ -142,6 +146,37 @@ Alternatives considered: ...
 
 ---
 
+## ADR-012: All-MongoDB Persistence (Dropped PostgreSQL/Prisma/TimescaleDB)
+**Date:** 2026-10-06
+**Status:** decided
+
+**Decision:** The backend's entire persistence layer is MongoDB, accessed via Mongoose. PostgreSQL, Prisma, and TimescaleDB are removed from the stack entirely. This supersedes ADR-004 and ADR-005.
+
+**What changed:**
+- All relational models (`departments`, `users`, `otp_codes`, `refresh_tokens`, `buildings`, `floors`, `rooms`, `devices`, `alerts`, `tickets`) are now Mongoose schemas/collections instead of Prisma/PostgreSQL tables.
+- IDs are MongoDB ObjectIds, not UUIDs. `sub`/`departmentId` in the JWT payload and all foreign-key-style references are now ObjectId strings.
+- The `department_buildings` many-to-many junction table is replaced by a `departmentIds: ObjectId[]` array field embedded directly on the `Building` document.
+- The `device_configs` 1:1 table is replaced by an embedded `config` subdocument on the `Device` document.
+- `ticket_checklist_items`, `ticket_comments`, and `ticket_attachments` are embedded arrays on the `Ticket` document rather than separate tables — they are always read/written together with their parent ticket.
+- `alert_notifications` is an embedded array on the `Alert` document for the same reason.
+- `sensor_readings` (previously a TimescaleDB hypertable) is now a plain MongoDB collection (`sensor_readings`) with a compound index on `(deviceId, time DESC)`. Time-bucketing/aggregation for dashboards is done via the MongoDB aggregation pipeline (`$group` on a truncated `time` field) instead of TimescaleDB's `time_bucket()`.
+- `device_logs` (see `api-contracts/rest-api.md`) is likewise a plain MongoDB collection, not a PostgreSQL table.
+- `audit_logs` and `device_config_snapshots` remain in MongoDB as before — no change for these two.
+
+**Reason:** Project-level decision to simplify the stack to a single database technology. Running one database engine (MongoDB) instead of two (PostgreSQL+TimescaleDB and MongoDB) reduces operational surface area — one connection pool, one backup/restore strategy, one set of ops runbooks, no cross-database joins needed anywhere in the codebase.
+
+**Trade-offs accepted:**
+- No native foreign-key constraints — referential integrity (e.g. a `Device.roomId` pointing to a real `Room`) is enforced in application code, not the database.
+- No native multi-table transactions by default — MongoDB multi-document transactions are supported (replica-set required) but are not as lightweight as PostgreSQL's; use sparingly, only where true atomicity is required (e.g. ticket + alert creation in the same operation).
+- Time-series query performance and storage efficiency for `sensor_readings` is weaker than TimescaleDB's purpose-built hypertables. If sensor volume grows large enough that this becomes a bottleneck, consider MongoDB's native `timeseries` collection type (available 5.0+) as a lower-effort upgrade path before reintroducing a second database.
+- No `CHECK` constraints — enum validation for fields like `status`, `role`, `type`, etc. is enforced by Mongoose schema `enum` only, not the database engine. A write that bypasses Mongoose (e.g. a raw driver script) could insert invalid values.
+
+**Alternatives considered:**
+- Keep the Postgres+TimescaleDB+Mongo hybrid (the original ADR-004/005 design). Rejected per explicit project direction — single-database simplicity was prioritized over TimescaleDB's time-series query ergonomics.
+- MongoDB native `timeseries` collections for `sensor_readings` instead of a plain collection. Considered and deferred — plain collection with a compound index was chosen for now since current sensor volume doesn't demand it; documented above as the upgrade path.
+
+---
+
 ## TBD Items (Decisions Pending)
 
 | Item | Options | Target decision date |
@@ -150,8 +185,8 @@ Alternatives considered: ...
 | Cloud hosting | AWS, GCP, DigitalOcean | TBD |
 | SMS provider | Twilio, AWS SNS | TBD |
 | WiFi provisioning on hardware | Hardcoded SSID, BLE provisioning, SmartConfig | TBD |
-| OTP storage backend | PostgreSQL, Redis | TBD |
-| Refresh token storage | PostgreSQL, Redis | TBD |
+| OTP storage backend | ~~PostgreSQL, Redis~~ MongoDB (`otp_codes` collection) — **resolved by ADR-012** | Resolved |
+| Refresh token storage | ~~PostgreSQL, Redis~~ MongoDB (`refresh_tokens` collection) — **resolved by ADR-012** | Resolved |
 | MQTT library for ESP32 | PubSubClient, AsyncMqttClient | TBD |
 | Touch controller model | FT5x06 or GT911 | TBD (depends on panel) |
 | CO sensor model | MQ-7 or other | TBD (hardware team) |

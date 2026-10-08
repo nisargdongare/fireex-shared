@@ -6,6 +6,8 @@ Dev URL: `http://localhost:3000/api`
 All requests and responses use `Content-Type: application/json`.
 Authentication: `Authorization: Bearer <access_token>` header on all protected routes.
 
+> **Database note (ADR-012):** the backend's persistence layer is MongoDB (via Mongoose) — see `decisions/architecture-decisions.md`. Every `"id"` / `"uuid"` placeholder in the example payloads below is actually a MongoDB ObjectId string (24-char hex, e.g. `"665f1a2b9e1c4a0012abcdef"`), not a UUID. The placeholder text wasn't updated throughout for brevity, but no endpoint returns a real UUID.
+
 ---
 
 ## Authentication
@@ -58,11 +60,11 @@ Verify the OTP and receive tokens.
   "accessToken": "eyJ...",
   "refreshToken": "eyJ...",
   "user": {
-    "id": "uuid",
+    "id": "665f1a2b9e1c4a0012abcdef",
     "fullName": "Ravi Kumar",
     "phoneNumber": "+911234567890",
     "role": "technician",
-    "departmentId": "uuid"
+    "departmentId": "665f1a2b9e1c4a0012abcd01"
   }
 }
 ```
@@ -121,11 +123,11 @@ List users. `super_admin` sees all; `dept_admin` sees only their department.
 {
   "data": [
     {
-      "id": "uuid",
+      "id": "665f1a2b9e1c4a0012abcdef",
       "fullName": "Ravi Kumar",
       "phoneNumber": "+911234567890",
       "role": "technician",
-      "departmentId": "uuid",
+      "departmentId": "665f1a2b9e1c4a0012abcd01",
       "departmentName": "Fire Safety Dept A",
       "isActive": true,
       "createdAt": "2024-01-10T00:00:00Z"
@@ -148,18 +150,18 @@ Register a new user.
   "fullName": "Priya Singh",
   "phoneNumber": "+919876543210",
   "role": "technician",
-  "departmentId": "uuid"
+  "departmentId": "665f1a2b9e1c4a0012abcd01"
 }
 ```
 
 **Response 201:**
 ```json
 {
-  "id": "uuid",
+  "id": "665f1a2b9e1c4a0012abcdef",
   "fullName": "Priya Singh",
   "phoneNumber": "+919876543210",
   "role": "technician",
-  "departmentId": "uuid",
+  "departmentId": "665f1a2b9e1c4a0012abcd01",
   "isActive": true,
   "createdAt": "2024-01-15T10:00:00Z"
 }
@@ -190,14 +192,14 @@ Update user. `dept_admin` can update users in their dept (cannot change role to 
 {
   "data": [
     {
-      "id": "uuid",
+      "id": "665f1a2b9e1c4a0012abcdef",
       "deviceCode": "FX-0042",
       "serialNumber": "SN-ESP32-00042",
       "status": "online",
       "firmwareVersion": "1.2.3",
       "lastSeenAt": "2024-01-15T14:30:00Z",
       "room": {
-        "id": "uuid",
+        "id": "665f1a2b9e1c4a0012abce01",
         "name": "Server Room 3B",
         "floor": { "floorNumber": 3 },
         "building": { "name": "Block A" }
@@ -218,8 +220,8 @@ Update user. `dept_admin` can update users in their dept (cannot change role to 
 {
   "deviceCode": "FX-0043",
   "serialNumber": "SN-ESP32-00043",
-  "departmentId": "uuid",
-  "roomId": "uuid"
+  "departmentId": "665f1a2b9e1c4a0012abcd01",
+  "roomId": "665f1a2b9e1c4a0012abce01"
 }
 ```
 
@@ -228,14 +230,16 @@ Update user. `dept_admin` can update users in their dept (cannot change role to 
 ---
 
 ### GET /api/devices/:id/readings
-Get time-series sensor readings.
+Get time-series sensor readings from the `sensor_readings` MongoDB collection.
 
 **Query params:** `from` (ISO8601), `to` (ISO8601), `interval` (raw|1m|5m|1h|1d), `limit`
+
+> `interval` values other than `raw` are computed via a MongoDB aggregation `$group`/`$dateTrunc` pipeline (previously TimescaleDB's `time_bucket()` — see `data-models/devices.md`).
 
 **Response 200:**
 ```json
 {
-  "deviceId": "uuid",
+  "deviceId": "665f1a2b9e1c4a0012abcdef",
   "interval": "5m",
   "data": [
     {
@@ -270,7 +274,7 @@ Valid commands: `test_alarm`, `silence_alarm`, `reboot`, `sync_config`
 **Response 202:**
 ```json
 {
-  "commandId": "uuid",
+  "commandId": "665f1a2b9e1c4a0012abcdef",
   "status": "queued",
   "message": "Command sent to device via MQTT"
 }
@@ -288,13 +292,13 @@ Valid commands: `test_alarm`, `silence_alarm`, `reboot`, `sync_config`
 {
   "data": [
     {
-      "id": "uuid",
+      "id": "665f1a2b9e1c4a0012abcdef",
       "type": "smoke",
       "severity": "critical",
       "status": "active",
       "triggeredAt": "2024-01-15T14:32:00Z",
       "device": {
-        "id": "uuid",
+        "id": "665f1a2b9e1c4a0012abce02",
         "deviceCode": "FX-0042",
         "room": { "name": "Server Room 3B", "building": { "name": "Block A" } }
       },
@@ -347,10 +351,10 @@ Fetch paginated device logs for a specific device, newest first.
 **Response 200:**
 ```json
 {
-  "deviceId": "uuid",
+  "deviceId": "665f1a2b9e1c4a0012abcdef",
   "data": [
     {
-      "id": "uuid",
+      "id": "665f1a2b9e1c4a0012abcf01",
       "type": "alarm_alert",
       "occurredAt": "2026-09-26T09:41:00Z",
       "smokePct": 42,
@@ -381,30 +385,29 @@ Fetch paginated device logs for a specific device, newest first.
 - `outputStates` is a snapshot of all output states at the time of the event; may be `null` for pure sensor events.
 - `meta` carries event-specific extra fields: e.g. `{ "output": "tubelight", "value": true }` for `output_changed`, `{ "mode": "manual" }` for `mode_changed`.
 - Logs are **write-once** — created by the MQTT telemetry / alert handlers on the backend; the display UI only reads them.
-- Logs are stored in the `device_logs` PostgreSQL table (see schema below).
+- Logs are stored in the `device_logs` MongoDB collection (see schema below). Previously documented as a PostgreSQL table — see ADR-012.
 
-**PostgreSQL: `device_logs` table:**
-```sql
-CREATE TABLE device_logs (
-  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  device_id       UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-  type            VARCHAR(30) NOT NULL,
-  occurred_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  smoke_pct       SMALLINT,
-  temp_celsius    REAL,
-  humidity_pct    SMALLINT,
-  person_detected BOOLEAN,
-  power_source    VARCHAR(10) CHECK (power_source IN ('mains','battery')),
-  battery_pct     SMALLINT,
-  battery_voltage REAL,
-  output_states   JSONB,
-  meta            JSONB NOT NULL DEFAULT '{}',
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX ON device_logs (device_id, occurred_at DESC);
-CREATE INDEX ON device_logs (device_id, type);
+**MongoDB: `device_logs` collection:**
+```ts
+{
+  _id:              ObjectId,
+  deviceId:         ObjectId,   // ref: devices
+  type:             string,     // one of the event types above
+  occurredAt:       Date,
+  smokePct?:        number,
+  tempCelsius?:     number,
+  humidityPct?:     number,
+  personDetected?:  boolean,
+  powerSource?:     'mains' | 'battery',
+  batteryPct?:      number,
+  batteryVoltage?:  number,
+  outputStates?:    Mixed,
+  meta:             Mixed,      // default {}
+  createdAt:        Date,
+}
 ```
+
+Compound indexes: `(deviceId, occurredAt DESC)` and `(deviceId, type)`.
 
 ---
 
@@ -440,14 +443,14 @@ CREATE INDEX ON device_logs (device_id, type);
 {
   "data": [
     {
-      "id": "uuid",
-      "ticketNumber": "TKT-2024-0042",
+      "id": "665f1a2b9e1c4a0012abcdef",
+      "ticketNumber": "TKT-0042",
       "type": "alert_response",
       "status": "assigned",
       "priority": "critical",
       "title": "Smoke alert — Server Room 3B",
       "assignedTo": {
-        "id": "uuid",
+        "id": "665f1a2b9e1c4a0012abce03",
         "fullName": "Ravi Kumar"
       },
       "device": {
@@ -469,19 +472,19 @@ Returns full ticket including checklist items and comments.
 **Response 200:**
 ```json
 {
-  "id": "uuid",
-  "ticketNumber": "TKT-2024-0042",
+  "id": "665f1a2b9e1c4a0012abcdef",
+  "ticketNumber": "TKT-0042",
   "type": "alert_response",
   "status": "in_progress",
   "priority": "critical",
   "title": "Smoke alert — Server Room 3B",
   "description": "Critical smoke alert triggered at 14:32. Device FX-0042.",
-  "device": { "id": "uuid", "deviceCode": "FX-0042" },
-  "alert": { "id": "uuid", "type": "smoke", "triggeredAt": "2024-01-15T14:32:00Z" },
-  "assignedTo": { "id": "uuid", "fullName": "Ravi Kumar" },
+  "device": { "id": "665f1a2b9e1c4a0012abce02", "deviceCode": "FX-0042" },
+  "alert": { "id": "665f1a2b9e1c4a0012abcf02", "type": "smoke", "triggeredAt": "2024-01-15T14:32:00Z" },
+  "assignedTo": { "id": "665f1a2b9e1c4a0012abce03", "fullName": "Ravi Kumar" },
   "checklist": [
     {
-      "id": "uuid",
+      "id": "665f1a2b9e1c4a0012abcf03",
       "itemOrder": 1,
       "label": "Verify alarm condition",
       "isRequired": true,
@@ -504,7 +507,7 @@ Update ticket status, checklist, notes.
 {
   "status": "in_progress",
   "checklistItems": [
-    { "id": "uuid", "isChecked": true, "notes": "Steam confirmed from break room." }
+    { "id": "665f1a2b9e1c4a0012abcf03", "isChecked": true, "notes": "Steam confirmed from break room." }
   ],
   "resolutionNotes": "Steam from adjacent break room. Sensor cleaned."
 }
@@ -520,7 +523,7 @@ Update ticket status, checklist, notes.
 {
   "data": [
     {
-      "id": "uuid",
+      "id": "665f1a2b9e1c4a0012abce04",
       "name": "Block A",
       "address": "123 Industrial Area",
       "city": "Mumbai",
@@ -537,10 +540,10 @@ Update ticket status, checklist, notes.
 **Response 200:**
 ```json
 {
-  "buildingId": "uuid",
+  "buildingId": "665f1a2b9e1c4a0012abce04",
   "floors": [
     {
-      "id": "uuid",
+      "id": "665f1a2b9e1c4a0012abce05",
       "floorNumber": 3,
       "floorName": "Third Floor",
       "roomCount": 8,

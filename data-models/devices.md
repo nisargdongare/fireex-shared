@@ -2,6 +2,8 @@
 
 A FireEx device is a physical hardware unit installed in a building. Each unit contains an ESP32 (firmware) and an ESP32-S3 (display UI). The backend tracks both as a single logical device.
 
+> **Database note (ADR-012):** All collections below are MongoDB collections accessed via Mongoose, not PostgreSQL/TimescaleDB. `id` fields are MongoDB ObjectId strings, not UUIDs. `device_configs` (previously a separate 1:1 table) is now an embedded `config` subdocument on the device itself — see below. `sensor_readings` (previously a TimescaleDB hypertable) is now a plain MongoDB collection.
+
 ---
 
 ## Device States
@@ -23,97 +25,116 @@ unprovisioned → online → offline → maintenance → decommissioned
 
 ---
 
-## PostgreSQL: `devices` Table
+## MongoDB: `devices` Collection
 
-```sql
-CREATE TABLE devices (
-  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  device_code         VARCHAR(50) NOT NULL UNIQUE,   -- human-readable: "FX-0042"
-  serial_number       VARCHAR(100) UNIQUE,            -- physical label on unit
-  room_id             UUID REFERENCES rooms(id) ON DELETE SET NULL,
-  department_id       UUID NOT NULL REFERENCES departments(id),
-  firmware_version    VARCHAR(20),                    -- e.g. "1.2.3"
-  ui_version          VARCHAR(20),                    -- display MCU firmware version
-  status              VARCHAR(20) NOT NULL DEFAULT 'unprovisioned'
-                      CHECK (status IN ('unprovisioned','online','offline','alarming','maintenance','decommissioned')),
-  last_seen_at        TIMESTAMPTZ,
-  installed_at        TIMESTAMPTZ,
-  installed_by        UUID REFERENCES users(id),      -- technician who installed it
-  notes               TEXT,
-  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+```ts
+{
+  _id:                ObjectId,
+  deviceCode:         string,     // human-readable: "FX-0042" — unique index
+  serialNumber:       string,     // physical label on unit — unique index
+  roomId?:            ObjectId,   // ref: rooms, indexed
+  departmentId:       ObjectId,   // ref: departments, indexed
+  firmwareVersion?:   string,     // e.g. "1.2.3"
+  uiVersion?:         string,     // display MCU firmware version
+  status:             'unprovisioned' | 'online' | 'offline' | 'alarming' | 'maintenance' | 'decommissioned',
+                                  // default 'unprovisioned'
+  lastSeenAt?:        Date,
+  installedAt?:       Date,
+  installedBy?:       ObjectId,  // ref: users — technician who installed it
+  notes?:             string,
+  config:             DeviceConfig,  // embedded subdocument, see below
+  createdAt:          Date,
+  updatedAt:          Date,
+}
 ```
 
 ---
 
-## PostgreSQL: `device_configs` Table
+## Embedded: `DeviceConfig` (the `devices.config` subdocument)
 
-Stores per-device sensor thresholds and operational parameters:
+Stores per-device sensor thresholds and operational parameters. Previously a separate `device_configs` table with a 1:1 relationship to `devices` — now embedded directly, since it's always read/written together with its parent device and MongoDB has no benefit from normalizing a strict 1:1 relation into a separate collection.
 
-```sql
-CREATE TABLE device_configs (
-  id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  device_id               UUID NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
-  smoke_threshold         FLOAT NOT NULL DEFAULT 0.5,    -- normalized 0.0–1.0
-  co_threshold_ppm        FLOAT NOT NULL DEFAULT 50.0,   -- PPM
-  temp_threshold_celsius  FLOAT NOT NULL DEFAULT 60.0,   -- °C
-  humidity_threshold_pct  FLOAT NOT NULL DEFAULT 80.0,   -- %RH
-  low_battery_voltage_v   FLOAT NOT NULL DEFAULT 20.0,   -- below this = battery LOW / 0%; range 15–24V
-  low_mains_voltage_v     FLOAT NOT NULL DEFAULT 20.0,   -- below this = mains absent; range 15–24V
-  reporting_interval_sec  INTEGER NOT NULL DEFAULT 30,   -- how often to send telemetry
-  alarm_auto_silence_sec  INTEGER NOT NULL DEFAULT 0,    -- 0 = never auto-silence
-  updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_by              UUID REFERENCES users(id)
-);
+```ts
+{
+  smokeThreshold:          number,     // default 0.5, normalized 0.0–1.0
+  coThresholdPpm:          number,     // default 50.0, PPM
+  tempThresholdCelsius:    number,     // default 60.0, °C
+  humidityThresholdPct:    number,     // default 80.0, %RH
+  lowBatteryVoltageV:      number,     // default 20.0 — below this = battery LOW / 0%; range 15–24V
+  lowMainsVoltageV:        number,     // default 20.0 — below this = mains absent; range 15–24V
+  reportingIntervalSec:    number,     // default 30 — how often to send telemetry
+  alarmAutoSilenceSec:     number,     // default 0 — 0 = never auto-silence
+  updatedAt:               Date,
+  updatedBy?:              ObjectId,  // ref: users
+}
 ```
 
 ---
 
-## TimescaleDB: `sensor_readings` Hypertable
+## MongoDB: `sensor_readings` Collection
 
-All sensor data is written here. TimescaleDB automatically partitions by time.
+All sensor data is written here. Previously a TimescaleDB hypertable; now a plain MongoDB collection with a compound index for time-range queries per device. See ADR-012 for the trade-offs of this change (query/storage efficiency vs. TimescaleDB) and the upgrade path (MongoDB native `timeseries` collection type) if sensor volume grows large enough to need it.
 
-```sql
-CREATE TABLE sensor_readings (
-  time                TIMESTAMPTZ NOT NULL,
-  device_id           UUID NOT NULL,
-  smoke_level         FLOAT,        -- normalized 0.0–1.0 from MQ2
-  temperature_celsius FLOAT,        -- from DHT11
-  humidity_pct        FLOAT,        -- from DHT11
-  battery_pct         FLOAT,        -- 0–100%, computed on device from voltage vs low_battery_voltage threshold
-  battery_voltage     FLOAT,        -- raw voltage (V) from GPIO9 ADC via R1=100kΩ/R2=12kΩ divider
-  mains_voltage       FLOAT,        -- raw voltage (V) from GPIO10 ADC via R1=100kΩ/R2=12kΩ divider
-  mains_present       BOOLEAN,      -- true if mains_voltage > low_mains_voltage threshold
-  battery_charging    BOOLEAN,      -- true if mains present AND battery voltage rose >0.3V over 30s
-  wifi_rssi           INTEGER,      -- WiFi signal strength (dBm)
-  gsm_signal_bars     SMALLINT,     -- GSM backup carrier signal bars (0–5)
-  exhaust_fan_on      BOOLEAN,      -- state of exhaust fan relay
-  sprinkler_triggered BOOLEAN,      -- one-shot sprinkler activation state
-  raw_payload         JSONB         -- full raw MQTT payload for debugging
-);
+```ts
+{
+  _id:                  ObjectId,
+  time:                 Date,       // indexed, part of compound index
+  deviceId:             ObjectId,   // ref: devices, part of compound index
+  smokeLevel?:          number,     // normalized 0.0–1.0 from MQ2
+  temperatureCelsius?:  number,     // from DHT22
+  humidityPct?:         number,     // from DHT22
+  batteryPct?:          number,     // 0–100%, computed on device from voltage vs lowBatteryVoltage threshold
+  batteryVoltage?:      number,     // raw voltage (V) from GPIO9 ADC via R1=100kΩ/R2=12kΩ divider
+  mainsVoltage?:        number,     // raw voltage (V) from GPIO10 ADC via R1=100kΩ/R2=12kΩ divider
+  mainsPresent?:        boolean,    // true if mainsVoltage > lowMainsVoltage threshold
+  batteryCharging?:     boolean,    // true if mains present AND battery voltage rose >0.3V over 30s
+  wifiRssi?:            number,     // WiFi signal strength (dBm)
+  gsmSignalBars?:       number,     // GSM backup carrier signal bars (0–5)
+  exhaustFanOn?:        boolean,    // state of exhaust fan relay
+  sprinklerTriggered?:  boolean,    // one-shot sprinkler activation state
+  rawPayload?:          Mixed,      // full raw MQTT payload for debugging
+}
+```
 
-SELECT create_hypertable('sensor_readings', 'time');
-CREATE INDEX ON sensor_readings (device_id, time DESC);
+Compound index on `(deviceId, time DESC)`.
+
+### Time-bucket aggregation (dashboards)
+
+Previously done via TimescaleDB's `time_bucket()`. Now done via the MongoDB aggregation pipeline, e.g. bucketing to 5-minute intervals:
+
+```js
+db.sensor_readings.aggregate([
+  { $match: { deviceId, time: { $gte: from, $lte: to } } },
+  {
+    $group: {
+      _id: {
+        $dateTrunc: { date: "$time", unit: "minute", binSize: 5 }
+      },
+      avgSmokeLevel: { $avg: "$smokeLevel" },
+      avgTempCelsius: { $avg: "$temperatureCelsius" },
+      avgHumidityPct: { $avg: "$humidityPct" },
+    }
+  },
+  { $sort: { _id: 1 } }
+])
 ```
 
 ### Retention Policy (default)
-- Raw readings retained for 1 year
-- Continuous aggregate (hourly averages) retained indefinitely
+- Raw readings retained for 1 year — implement via a MongoDB TTL index or a scheduled cleanup job (no built-in continuous-aggregate retention policy like TimescaleDB; if long-term rollups are needed, write them to a separate `sensor_readings_hourly` collection via a scheduled job)
 - Configurable per-deployment
 
 ---
 
 ## MongoDB: `device_config_snapshots` Collection
 
-Every time a device config changes, a snapshot is stored:
+Every time a device config changes, a snapshot is stored (unchanged from before — this collection was already in MongoDB):
 
 ```json
 {
   "_id": "ObjectId",
-  "deviceId": "uuid",
+  "deviceId": "ObjectId",
   "snapshotAt": "ISODate",
-  "changedBy": "user-uuid",
+  "changedBy": "ObjectId",
   "config": {
     "smokeThreshold": 0.5,
     "coThresholdPpm": 50.0,
@@ -136,26 +157,28 @@ Each device authenticates to the MQTT broker using:
 - **Username**: `device-{deviceId}`
 - **Password**: device-specific secret provisioned at manufacture time
 
+(`{deviceId}` here is the MongoDB ObjectId string of the device document.)
+
 ---
 
 ## Device Sensor Fields (Summary)
 
 | Field | Unit | Range | Notes |
 |-------|------|-------|-------|
-| `smoke_level` | normalized | 0.0 – 1.0 | MQ2 sensor reading |
-| `temperature_celsius` | °C | -10 – 100 | DHT11 ambient temp |
-| `humidity_pct` | %RH | 0 – 100 | DHT11 relative humidity |
-| `battery_pct` | % | 0 – 100 | Computed on device: 0% = low_battery_voltage threshold, 100% = 24V |
-| `battery_voltage` | V | 0 – 24 | Raw ADC reading via R1=100kΩ/R2=12kΩ divider on GPIO9 |
-| `mains_voltage` | V | 0 – 30 | Raw ADC reading via R1=100kΩ/R2=12kΩ divider on GPIO10 |
-| `mains_present` | boolean | — | True if mains_voltage > user-set low_mains_voltage threshold |
-| `battery_charging` | boolean | — | True if mains present AND voltage rising >0.3V over 30s window |
-| `wifi_rssi` | dBm | -100 – 0 | WiFi signal strength; shown on DeviceDetail |
-| `gsm_signal_bars` | integer | 0 – 5 | GSM backup carrier signal; shown on DeviceDetail |
-| `exhaust_fan_on` | boolean | — | Current state of exhaust fan relay; controllable from app |
-| `sprinkler_triggered` | boolean | — | Has the one-shot sprinkler been activated; shown as "Active/Inactive" on EmergencyAlertScreen |
-| `buzzer_muted` | boolean | — | Whether local buzzer has been silenced; controllable from app |
-| `is_armed` | boolean | — | Device armed state; controllable from app (Armed toggle) |
+| `smokeLevel` | normalized | 0.0 – 1.0 | MQ2 sensor reading |
+| `temperatureCelsius` | °C | -10 – 100 | DHT22 ambient temp |
+| `humidityPct` | %RH | 0 – 100 | DHT22 relative humidity |
+| `batteryPct` | % | 0 – 100 | Computed on device: 0% = lowBatteryVoltage threshold, 100% = 24V |
+| `batteryVoltage` | V | 0 – 24 | Raw ADC reading via R1=100kΩ/R2=12kΩ divider on GPIO9 |
+| `mainsVoltage` | V | 0 – 30 | Raw ADC reading via R1=100kΩ/R2=12kΩ divider on GPIO10 |
+| `mainsPresent` | boolean | — | True if mainsVoltage > user-set lowMainsVoltage threshold |
+| `batteryCharging` | boolean | — | True if mains present AND voltage rising >0.3V over 30s window |
+| `wifiRssi` | dBm | -100 – 0 | WiFi signal strength; shown on DeviceDetail |
+| `gsmSignalBars` | integer | 0 – 5 | GSM backup carrier signal; shown on DeviceDetail |
+| `exhaustFanOn` | boolean | — | Current state of exhaust fan relay; controllable from app |
+| `sprinklerTriggered` | boolean | — | Has the one-shot sprinkler been activated; shown as "Active/Inactive" on EmergencyAlertScreen |
+| `buzzerMuted` | boolean | — | Whether local buzzer has been silenced; controllable from app |
+| `isArmed` | boolean | — | Device armed state; controllable from app (Armed toggle) |
 
 ---
 
@@ -168,6 +191,7 @@ Each device authenticates to the MQTT broker using:
 | `GET /api/devices/:id` | dept_admin+ | Get device details |
 | `PATCH /api/devices/:id` | dept_admin+ | Update device config or room assignment |
 | `GET /api/devices/:id/readings` | dept_admin+ | Get time-series sensor readings |
+| `GET /api/devices/:id/logs` | technician+ | Get paginated device event logs |
 | `POST /api/devices/:id/command` | dept_admin+ | Send command to device |
 | `DELETE /api/devices/:id` | super_admin | Decommission device |
 
