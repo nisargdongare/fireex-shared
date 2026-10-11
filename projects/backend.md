@@ -2,89 +2,92 @@
 
 ## Overview
 
-The central Fastify + Node.js backend serves all FireEx clients: mobile app, web admin, and hardware devices (via MQTT bridge). It is the single source of truth for all business logic.
+The central **Express + Node.js** backend serves all FireEx clients: mobile app, web admin, and hardware devices (via MQTT — not yet implemented). It is the single source of truth for all business logic.
 
-**Status:** In progress (as of 2026-10-06)
+**Status:** In progress (as of 2026-10-11)
 **Repo:** `~/Documents/Software_projects/fireex-backend`
 **Port (dev):** 3000
+**Language:** TypeScript (ESM — `"type": "module"` in package.json; all local imports use `.js` extension)
 
-> **Database note (ADR-012):** the persistence layer is **MongoDB only**, accessed via Mongoose. PostgreSQL, Prisma, and TimescaleDB have been removed from the stack — see `decisions/architecture-decisions.md` for the full rationale and trade-offs.
+> **Framework note:** The backend uses **Express**, not Fastify. Previous docs describing Fastify, plugins, decorators, or `@fastify/*` packages are incorrect.
 
 ---
 
-## Service Architecture
+## Actual Folder Structure
 
 ```
 fireex-backend/
   src/
-    app.ts                  ← Fastify app factory
-    server.ts               ← Entry point, starts server
-    config/
-      env.ts                ← Zod-validated env config
-      database.ts           ← Mongo connection setup (connectMongo/disconnectAll)
-    plugins/
-      auth.ts               ← JWT verification plugin
-      websocket.ts          ← WebSocket plugin setup
-      mqtt.ts               ← MQTT bridge plugin
-    routes/
-      auth/
-        otp.ts              ← POST /auth/otp/request, /verify, /refresh, /logout
-      users/
-        index.ts            ← CRUD for users
-      devices/
-        index.ts            ← GET readings, GET logs, POST command (device CRUD TBD)
-      alerts/
-        index.ts            ← List/get/acknowledge/resolve/false-alarm for alerts
-      tickets/
-        index.ts            ← CRUD for tickets, checklist updates, comments, attachments
-      buildings/
-        index.ts            ← CRUD for buildings + floors
-      floors/
-        index.ts            ← Rooms under a floor
-      rooms/
-        index.ts            ← Get/update/delete a room
-    services/
-      auth.service.ts       ← OTP generation, verification, JWT issuance (TBD extraction from routes)
-      alert.service.ts      ← Alert creation, notification dispatch (TBD)
-      notification.service.ts ← Push + SMS dispatch (TBD)
-      websocket.service.ts  ← WS event broadcasting (TBD)
-      mqtt.service.ts       ← MQTT publish helpers (TBD)
-      ticket.service.ts     ← Ticket creation, checklist management (TBD)
-    mqtt/
-      handlers/
-        telemetry.handler.ts  ← TBD — not yet implemented
-        alert.handler.ts      ← TBD — not yet implemented
-        status.handler.ts     ← TBD — not yet implemented
-        register.handler.ts   ← TBD — not yet implemented
-        ack.handler.ts        ← TBD — not yet implemented
-      publisher.ts          ← Publish commands and config to devices (TBD)
-    db/
-      mongo/
-        models/             ← All Mongoose models — the entire data layer
-          Department.ts
-          User.ts
-          OtpCode.ts
-          RefreshToken.ts
-          Building.ts
-          Floor.ts
-          Room.ts
-          Device.ts         ← includes embedded `config` subdocument (was device_configs table)
-          Alert.ts          ← includes embedded `notifications` array (was alert_notifications table)
-          Ticket.ts         ← includes embedded `checklist`, `comments`, `attachments` arrays
-          DeviceLog.ts
-          SensorReading.ts  ← was a TimescaleDB hypertable, now a plain Mongo collection
-          AuditLog.ts
-          DeviceConfigSnapshot.ts
-          index.ts          ← barrel export
+    app.ts                  ← Express app factory, route mounting, Swagger UI at /api/docs
+    index.ts                ← Entry point, starts server
+    config.ts               ← Config (port, JWT secrets/expiry, env)
+    db.ts                   ← MongoDB connection, seed data (users, orgs, devices)
+    swagger.ts              ← swagger-jsdoc config, glob: src/routes/**/*.ts
     middleware/
-      role-guard.ts         ← Role-based access control decorator (`fastify.rbac`)
-      rate-limiter.ts       ← TBD (rate limiting currently only via @fastify/rate-limit globally)
-    utils/
-      otp.ts                ← OTP generation/hashing
-      pagination.ts
-      errors.ts
-    types/
-      index.ts              ← Shared TypeScript types
+      auth.middleware.ts    ← jwtMiddleware + optionalJwt (Express middleware)
+    models/
+      Device.ts
+      Organisation.ts
+      User.ts
+      OtpCode.ts
+      RefreshToken.ts
+    routes/
+      auth.ts               ← POST /api/auth/otp/request, /otp/verify, /refresh, /logout
+      devices.ts            ← GET /api/devices (+ /floor/:n, /room/:n, /:id)
+      users.ts              ← POST /api/users/login, GET /api/users/me
+      health.ts             ← GET /health
+    services/
+      auth.service.ts       ← OTP generation, JWT issuance, refresh, logout (implemented)
+      device.service.ts     ← Device queries by org/floor/room/id (implemented)
+  dist/                     ← Compiled JS (mirrors src/)
+  package.json
+  tsconfig.json
+```
+
+---
+
+## Tech Stack
+
+| Concern | Library |
+|---|---|
+| HTTP framework | **Express 4** |
+| Language | TypeScript (ESM) |
+| Database | MongoDB via **Mongoose** |
+| Validation | **Zod** (request bodies) |
+| Auth | **jsonwebtoken** (JWT) + **bcryptjs** (OTP hashing) |
+| API docs | **swagger-jsdoc** + **swagger-ui-express** at `/api/docs` |
+
+---
+
+## Code Patterns
+
+### Models (`src/models/*.ts`)
+- TypeScript interface extending `Document`
+- Sub-schemas with `{ _id: false }` for embedded objects
+- Main schema: `new Schema<IModel>({ ... }, { timestamps: true, collection: 'name' })`
+- Exported as: `export const ModelName = mongoose.model<IModel>('ModelName', schema)`
+
+### Services (`src/services/*.ts`)
+- Static class with static async methods
+- Input validated first (`mongoose.Types.ObjectId.isValid(id)` → throw `new Error('INVALID_X_ID')`)
+- Throws plain `Error` with ALL-CAPS string codes (`'INVALID_ORG_ID'`, `'ORGANIZATION_NOT_FOUND'`)
+
+### Routes (`src/routes/*.ts`)
+- `Router()` instance; `router.use(jwtMiddleware)` for protected routes
+- Zod schema defined at module scope; `.parse(req.body)` inside handler
+- Async handlers `(req: Request, res: Response)` — no `NextFunction`
+- Error handling: `try/catch` with `errorMap: { [key: string]: { status, message } }`
+- JSDoc `/** @swagger ... */` blocks directly above each route for Swagger
+
+### `req.user` shape (after `jwtMiddleware`)
+```ts
+{
+  sub: string,                              // user ObjectId
+  mobileNumber: string,
+  appRole: string,
+  organizationIds?: string[],               // array of org ObjectId strings
+  organizations?: { _id: string, name: string }[]
+}
 ```
 
 ---
@@ -95,102 +98,52 @@ fireex-backend/
 NODE_ENV=development
 PORT=3000
 MONGODB_URI=mongodb://localhost:27017/fireex
-MQTT_BROKER_URL=mqtt://localhost:1883
-MQTT_USERNAME=backend
-MQTT_PASSWORD=secret
 JWT_ACCESS_SECRET=<32+ chars>
 JWT_REFRESH_SECRET=<32+ chars>
 JWT_ACCESS_EXPIRY=15m
 JWT_REFRESH_EXPIRY=30d
-SMS_PROVIDER=twilio          # or aws_sns
-TWILIO_ACCOUNT_SID=...
-TWILIO_AUTH_TOKEN=...
-TWILIO_FROM_NUMBER=+1...
-FCM_SERVER_KEY=...
-APNS_KEY_ID=...
-APNS_TEAM_ID=...
-APNS_KEY_PATH=./certs/apns.p8
 ```
 
-`DATABASE_URL` (PostgreSQL) no longer exists — removed along with Prisma/TimescaleDB per ADR-012.
+---
+
+## Database (MongoDB only)
+
+- Managed by Mongoose — no PostgreSQL, no Prisma, no TimescaleDB
+- Collections: `users`, `organisations`, `devices`, `otp_codes`, `refresh_tokens`
+- Seed data in `db.ts`: 2 default users (mobile: `8888888888`, `9999999999`), 1 org, 1 device
+- `dbConnected` flag exported from `db.ts`; some routes fall back to in-memory seed data when DB is unreachable
 
 ---
 
-## Database Setup
+## Authentication Flow
 
-### MongoDB (the only database)
-- Managed entirely by Mongoose — no Prisma, no PostgreSQL, no TimescaleDB
-- All collections live in one MongoDB instance/database, pointed to by `MONGODB_URI`
-- Collections: `departments`, `users`, `otp_codes`, `refresh_tokens`, `buildings`, `floors`, `rooms`, `devices`, `alerts`, `tickets`, `device_logs`, `sensor_readings`, `audit_logs`, `device_config_snapshots`
-- No strict schema enforcement at the DB engine level — Mongoose schemas (with `enum`, `required`, etc.) are the only validation layer; there are no database-level `CHECK` or `FOREIGN KEY` constraints
-- All primary keys are MongoDB's default `ObjectId` — no manual UUID generation
+1. `POST /api/auth/otp/request` — look up user by `mobileNumber` (10-digit, no country code), generate 6-digit OTP, bcrypt-hash it, store in `otp_codes` with 5-min expiry, log to console in dev
+2. `POST /api/auth/otp/verify` — compare OTP hash, issue access token (15m) + refresh token (30d), return tokens + user with embedded `organizations[]`
+3. `POST /api/auth/refresh` — exchange refresh token for new pair
+4. `POST /api/auth/logout` — revoke refresh token (requires JWT)
 
----
-
-## Authentication Flow (Server Side)
-
-1. `POST /api/auth/otp/request`:
-   - Look up user by phone number (`User.findOne({ phoneNumber })`)
-   - If not found → 404 `PHONE_NOT_REGISTERED`
-   - Generate 6-digit OTP, bcrypt-hash it, store in `otp_codes` with 5-min expiry
-   - Call SMS service to deliver OTP (currently logged to console in dev — TODO: wire real SMS)
-   - Return `{ success: true, expiresInSeconds: 300 }`
-
-2. `POST /api/auth/otp/verify`:
-   - Find latest unused, non-expired OTP for that phone number
-   - Compare submitted OTP against stored hash
-   - On match: mark OTP as used, issue access token (15m) + refresh token (30d)
-   - Embed `{ sub, phone, role, departmentId }` in JWT payload — `sub` and `departmentId` are MongoDB ObjectId strings
-   - Return tokens + user object
-
-3. Authenticated requests:
-   - Fastify auth plugin verifies JWT on every protected route
-   - Decoded JWT payload attached to `request.user`
-   - Route handlers use `request.user.role` for authorization
+Also: `POST /api/users/login` — a simpler direct login by mobile number (no OTP step), returns same token shape; used for dev/test.
 
 ---
 
-## MQTT Bridge (Server Side)
+## Swagger / API Docs
 
-The MQTT bridge runs as a Fastify plugin that starts alongside the HTTP server. **Currently only connects and subscribes — message handlers are not yet implemented** (see `mqtt/handlers/` TBD above).
-
-Planned behavior once handlers are implemented:
-
-1. **On startup**: connect to MQTT broker, subscribe to `fireex/+/telemetry`, `fireex/+/alert`, `fireex/+/status`, `fireex/+/register`, `fireex/+/ack`
-2. **On `telemetry`**: write to `sensor_readings` collection, update `devices.lastSeenAt` and `devices.status = 'online'`
-3. **On `alert`**: create an `Alert` document, call `alert.service.ts` to dispatch notifications
-4. **On `status` (online=false)**: set `devices.status = 'offline'`, broadcast `device.status_changed` WebSocket event
-5. **On `register`**: validate device, mark as online, publish config to `fireex/{deviceId}/config`
-6. **On `ack`**: log command execution result to the `audit_logs` collection
+- Available at `http://localhost:3000/api/docs` in development
+- All routes documented via JSDoc `@swagger` comments in `src/routes/**/*.ts`
+- Global `bearerAuth` security scheme; most routes require it except OTP request/verify
 
 ---
 
-## WebSocket Event Broadcasting
+## MQTT / WebSocket
 
-- Uses `@fastify/websocket`
-- In-memory subscription map: `Map<scopeId, Set<WebSocket>>`
-- When scope is `department`, all device/alert events for that department are routed to subscribers
-- When scope is `global` (super_admin), all events are forwarded
-- Dead connections are cleaned up on socket close/error events
-- **Not yet implemented** — plugin registers `@fastify/websocket` but no event broadcasting logic exists yet
+Not yet implemented. Planned for a future phase.
 
 ---
 
-## Role-Based Access Control
+## Key Decisions
 
-Implemented as a Fastify decorator `fastify.rbac(allowedRoles: string[])`:
-
-```typescript
-fastify.get('/api/devices', { preHandler: [fastify.authenticate, fastify.rbac(['dept_admin', 'super_admin'])] }, handler)
-```
-
-Additionally, for `dept_admin`, queries are scoped in application code to `{ departmentId: request.user.departmentId }` Mongoose filters (there is no database-level row-security equivalent, since MongoDB has no RLS feature — this must be applied consistently in every handler).
-
----
-
-## Key Decisions (See Also `decisions/architecture-decisions.md`)
-
-- Fastify chosen over Express for performance and first-class TypeScript support
-- Zod used for runtime payload validation (not just TypeScript types)
-- **MongoDB-only persistence (ADR-012)** — PostgreSQL, Prisma, and TimescaleDB were dropped in favor of a single-database architecture. `sensor_readings` and `device_logs` are plain MongoDB collections with compound indexes rather than a TimescaleDB hypertable / SQL table.
-- OTPs stored hashed (bcrypt) — raw OTP is never stored, even temporarily
+- Express chosen (not Fastify) for simplicity and team familiarity
+- Zod for runtime payload validation
+- MongoDB-only persistence — no SQL/TimescaleDB
+- OTPs stored hashed (bcrypt) — raw OTP never persisted
+- Multi-org support: users have `organizationIds[]` array; JWT embeds `organizations[]` with `_id` + `name`

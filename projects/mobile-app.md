@@ -5,7 +5,7 @@
 A single React Native app for two user types: **facility users** (building occupants/managers) and **service technicians**. The role is determined post-authentication — the backend detects role from the registered phone number and returns it in the JWT. Same binary, UI adapts automatically.
 
 **Status:** Dashboard implemented with full multi-organization support (as of 2026-10-08)
-**Design:** Completed — [canvas](https://claude.ai/artifact/TFP8dCVRFBC61pEdJvKGW6)
+**Design:** Completed — [UX Canvas](https://claude.ai/artifact/TFP8dCVRFBC61pEdJvKGW6) — contains all screens; read artboard `.dc.html` before building any screen
 **Repo:** `~/Documents/Software_projects/fireex-mobile`
 **Platform:** iOS + Android (+ web via Expo, for faster iteration)
 
@@ -188,6 +188,46 @@ Bottom nav (technician): Tickets (single primary view)
 │ ... (ordered worst to best)      │
 ├─────────────────────────────────┤
 │ Home | Chat | Settings          │ ← Bottom Tabs
+└─────────────────────────────────┘
+```
+
+---
+
+## DeviceDetail Screen Layout
+
+Based on UX canvas artboard `project/DeviceDetail.dc.html`.
+
+```
+┌─────────────────────────────────┐
+│ ← Back  Kitchen       [Armed]   │ ← Header
+│          FireEx — 4F2A          │
+├─────────────────────────────────┤
+│ ┌──────────┐ ┌──────────┐      │
+│ │ Smoke 4% │ │ Temp 22°C│      │ ← 2×2 Sensor Grid
+│ └──────────┘ └──────────┘      │
+│ ┌──────────┐ ┌──────────┐      │
+│ │ Humid 48%│ │Battery 92│      │
+│ └──────────┘ └──────────┘      │
+├─────────────────────────────────┤
+│ Controls                        │
+│ [Fan icon]  Exhaust fan  [off]  │
+│ [Mute icon] Mute buzzer  [off]  │
+│ [Lock icon] Armed        [on]   │
+├─────────────────────────────────┤
+│ [ Request maintenance ]         │
+│ Sprinkler reset needs a tech... │
+├─────────────────────────────────┤
+│ Device details                  │
+│ Device ID       FX-4F2A-003     │
+│ Firmware        v2.3.1          │
+│ Wi-Fi           Office-5G       │
+│ GSM backup      Jio · 4 bars    │
+│ Smoke sensor    MQ2 · reading OK│
+│ Last synced     2 min ago       │
+├─────────────────────────────────┤
+│ Recent activity                 │
+│ ● Armed by Priya   Today 8:02AM │
+│ ● Connectivity restored  Yesterday│
 └─────────────────────────────────┘
 ```
 

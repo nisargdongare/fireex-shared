@@ -1,88 +1,85 @@
 # FireEx REST API Contracts
 
-Base URL: `https://api.fireex.example.com/api` (production TBD)
+Base URL: `https://api.fireex.com/api` (production TBD)
 Dev URL: `http://localhost:3000/api`
+Swagger UI: `http://localhost:3000/api/docs`
 
 All requests and responses use `Content-Type: application/json`.
-Authentication: `Authorization: Bearer <access_token>` header on all protected routes.
+Authentication: `Authorization: Bearer <access_token>` on all protected routes.
 
-> **Database note (ADR-012):** the backend's persistence layer is MongoDB (via Mongoose) — see `decisions/architecture-decisions.md`. Every `"id"` / `"uuid"` placeholder in the example payloads below is actually a MongoDB ObjectId string (24-char hex, e.g. `"665f1a2b9e1c4a0012abcdef"`), not a UUID. The placeholder text wasn't updated throughout for brevity, but no endpoint returns a real UUID.
+> All `id` fields are MongoDB ObjectId strings (24-char hex, e.g. `"665f1a2b9e1c4a0012abcdef"`).
 
 ---
 
-## Authentication
+## Response Envelope
+
+**Success:**
+```json
+{ "success": true, "data": { ... } }
+```
+
+**Error:**
+```json
+{ "success": false, "error": "ERROR_CODE", "message": "Human-readable description" }
+```
+
+---
+
+## Authentication (`/api/auth`)
 
 ### POST /api/auth/otp/request
-Request an OTP to be sent to the user's phone number.
+Request OTP sent to the user's registered mobile number. Public — no JWT required.
 
 **Request:**
 ```json
-{
-  "phoneNumber": "+911234567890"
-}
+{ "mobileNumber": "8888888888" }
+```
+`mobileNumber` is 10 digits, no country code.
+
+**Response 200:**
+```json
+{ "success": true, "message": "OTP sent successfully. Check your SMS." }
+```
+
+**Errors:** `400 VALIDATION_ERROR`, `404 PHONE_NOT_REGISTERED`, `500 INTERNAL_SERVER_ERROR`
+
+---
+
+### POST /api/auth/otp/verify
+Verify OTP and receive JWT tokens. Public — no JWT required.
+
+**Request:**
+```json
+{ "mobileNumber": "8888888888", "otp": "123456" }
 ```
 
 **Response 200:**
 ```json
 {
   "success": true,
-  "message": "OTP sent",
-  "expiresInSeconds": 300
-}
-```
-
-**Response 404** (phone number not registered):
-```json
-{ "error": "PHONE_NOT_REGISTERED" }
-```
-
-**Response 429** (rate limited):
-```json
-{ "error": "TOO_MANY_REQUESTS", "retryAfterSeconds": 60 }
-```
-
----
-
-### POST /api/auth/otp/verify
-Verify the OTP and receive tokens.
-
-**Request:**
-```json
-{
-  "phoneNumber": "+911234567890",
-  "otp": "492817"
-}
-```
-
-**Response 200:**
-```json
-{
-  "accessToken": "eyJ...",
-  "refreshToken": "eyJ...",
-  "user": {
-    "id": "665f1a2b9e1c4a0012abcdef",
-    "fullName": "Ravi Kumar",
-    "phoneNumber": "+911234567890",
-    "role": "technician",
-    "departmentId": "665f1a2b9e1c4a0012abcd01"
+  "data": {
+    "accessToken": "eyJ...",
+    "refreshToken": "eyJ...",
+    "user": {
+      "_id": "665f1a2b9e1c4a0012abcdef",
+      "mobileNumber": "8888888888",
+      "appRole": "user",
+      "firstName": "John",
+      "lastName": "Doe",
+      "organizations": [{ "_id": "...", "name": "FireEx Services" }],
+      "email": "john@example.com",
+      "isActive": true
+    }
   }
 }
 ```
 
-**Response 400:**
-```json
-{ "error": "INVALID_OTP" }
-```
-
-**Response 410:**
-```json
-{ "error": "OTP_EXPIRED" }
-```
+**Errors:** `400 INVALID_OTP`, `400 OTP_EXPIRED`, `400 OTP_NOT_FOUND`, `403 USER_INACTIVE`, `404 PHONE_NOT_REGISTERED`
 
 ---
 
 ### POST /api/auth/refresh
-Exchange a refresh token for a new access token.
+Exchange a refresh token for a new access + refresh token pair. Public — no JWT required.
 
 **Request:**
 ```json
@@ -91,479 +88,187 @@ Exchange a refresh token for a new access token.
 
 **Response 200:**
 ```json
-{
-  "accessToken": "eyJ...",
-  "refreshToken": "eyJ..."
-}
+{ "success": true, "data": { "accessToken": "eyJ...", "refreshToken": "eyJ..." } }
 ```
+
+**Errors:** `401 INVALID_REFRESH_TOKEN`, `401 REFRESH_TOKEN_EXPIRED`, `401 REFRESH_TOKEN_REVOKED`, `403 USER_INACTIVE`
 
 ---
 
 ### POST /api/auth/logout
-Revoke the current refresh token.
-
-**Request:** (no body, uses Authorization header)
-
-**Response 200:**
-```json
-{ "success": true }
-```
-
----
-
-## Users
-
-### GET /api/users
-List users. `super_admin` sees all; `dept_admin` sees only their department.
-
-**Query params:** `role`, `departmentId`, `page`, `limit`, `search`
-
-**Response 200:**
-```json
-{
-  "data": [
-    {
-      "id": "665f1a2b9e1c4a0012abcdef",
-      "fullName": "Ravi Kumar",
-      "phoneNumber": "+911234567890",
-      "role": "technician",
-      "departmentId": "665f1a2b9e1c4a0012abcd01",
-      "departmentName": "Fire Safety Dept A",
-      "isActive": true,
-      "createdAt": "2024-01-10T00:00:00Z"
-    }
-  ],
-  "pagination": { "page": 1, "limit": 20, "total": 47 }
-}
-```
-
----
-
-### POST /api/users
-Register a new user.
-
-**Access:** `super_admin`, `dept_admin` (dept_admin can only create `end_user` and `technician` in their dept)
+Revoke a refresh token. **Requires JWT.**
 
 **Request:**
 ```json
+{ "refreshToken": "eyJ..." }
+```
+
+**Response 200:**
+```json
+{ "success": true, "message": "Logout successful" }
+```
+
+---
+
+## Users (`/api/users`)
+
+### POST /api/users/login
+Direct login by mobile number — no OTP step. Returns user + JWT tokens. Public — no JWT required.
+> Used for dev/test. The production login flow is OTP-based via `/api/auth/otp/request` + `/otp/verify`.
+
+**Request:**
+```json
+{ "mobileNumber": "8888888888" }
+```
+
+**Response 200:**
+```json
 {
-  "fullName": "Priya Singh",
-  "phoneNumber": "+919876543210",
-  "role": "technician",
-  "departmentId": "665f1a2b9e1c4a0012abcd01"
+  "success": true,
+  "data": {
+    "accessToken": "eyJ...",
+    "refreshToken": "eyJ...",
+    "user": {
+      "_id": "...",
+      "mobileNumber": "8888888888",
+      "appRole": "user",
+      "firstName": "John",
+      "lastName": "Doe",
+      "email": "john@example.com",
+      "address": "123 Main St",
+      "city": "New Delhi",
+      "state": "Delhi",
+      "pincode": "110001",
+      "organizations": [{ "_id": "...", "name": "FireEx Services" }],
+      "isActive": true
+    }
+  }
 }
 ```
 
-**Response 201:**
+**Errors:** `400 VALIDATION_ERROR`, `403 USER_INACTIVE`, `404 USER_NOT_FOUND`
+
+---
+
+### GET /api/users/me
+Get the currently authenticated user's full profile. **Requires JWT.**
+
+**Response 200:**
 ```json
 {
-  "id": "665f1a2b9e1c4a0012abcdef",
-  "fullName": "Priya Singh",
-  "phoneNumber": "+919876543210",
-  "role": "technician",
-  "departmentId": "665f1a2b9e1c4a0012abcd01",
-  "isActive": true,
-  "createdAt": "2024-01-15T10:00:00Z"
+  "success": true,
+  "data": {
+    "_id": "...",
+    "mobileNumber": "8888888888",
+    "appRole": "user",
+    "firstName": "John",
+    "lastName": "Doe",
+    "email": "john@example.com",
+    "address": "123 Main St",
+    "city": "New Delhi",
+    "state": "Delhi",
+    "pincode": "110001",
+    "organizations": [{ "_id": "...", "name": "FireEx Services" }],
+    "isActive": true
+  }
 }
 ```
 
 ---
 
-### PATCH /api/users/:id
-Update user. `dept_admin` can update users in their dept (cannot change role to `super_admin` or `dept_admin`).
+## Devices (`/api/devices`)
 
-**Request (all fields optional):**
-```json
-{
-  "fullName": "Priya Sharma",
-  "isActive": false
-}
-```
-
----
-
-## Devices
+All device endpoints **require JWT**. `orgId` can be passed as a query param; if omitted, the first org from the user's JWT `organizations[]` is used. Users can only access devices belonging to their own organizations.
 
 ### GET /api/devices
-**Query params:** `departmentId`, `roomId`, `status`, `page`, `limit`
+List all devices for an organization.
+
+**Query params:** `orgId` (optional)
 
 **Response 200:**
 ```json
 {
-  "data": [
-    {
-      "id": "665f1a2b9e1c4a0012abcdef",
-      "deviceCode": "FX-0042",
-      "serialNumber": "SN-ESP32-00042",
-      "status": "online",
-      "firmwareVersion": "1.2.3",
-      "lastSeenAt": "2024-01-15T14:30:00Z",
-      "room": {
-        "id": "665f1a2b9e1c4a0012abce01",
-        "name": "Server Room 3B",
-        "floor": { "floorNumber": 3 },
-        "building": { "name": "Block A" }
+  "success": true,
+  "data": {
+    "organization": {
+      "_id": "...", "name": "FireEx Services", "email": "...", "mobileNumber": "...",
+      "address": "...", "city": "...", "state": "...", "pincode": "...",
+      "gstNumber": "...", "registrationNumber": "...", "isActive": true,
+      "createdAt": "...", "updatedAt": "..."
+    },
+    "deviceList": [
+      {
+        "_id": "...",
+        "deviceName": "Smoke Detector 1",
+        "deviceType": "smoke_detector",
+        "floor": { "floorsNo": 1, "name": "Ground Floor" },
+        "room": { "roomNumber": "101", "name": "Main Office" },
+        "status": "active",
+        "location": "Near entrance",
+        "serialNumber": "SN-001",
+        "installationDate": "2024-01-01T00:00:00Z",
+        "isActive": true,
+        "createdAt": "...", "updatedAt": "..."
       }
-    }
-  ],
-  "pagination": { "page": 1, "limit": 20, "total": 12 }
+    ]
+  }
 }
 ```
 
----
-
-### POST /api/devices
-**Access:** `super_admin`
-
-**Request:**
-```json
-{
-  "deviceCode": "FX-0043",
-  "serialNumber": "SN-ESP32-00043",
-  "departmentId": "665f1a2b9e1c4a0012abcd01",
-  "roomId": "665f1a2b9e1c4a0012abce01"
-}
-```
-
-**Response 201:** Device object
+**Errors:** `400 ORG_ID_MISSING`, `400 INVALID_ORG_ID`, `403 FORBIDDEN`, `404 ORGANIZATION_NOT_FOUND`
 
 ---
 
-### GET /api/devices/:id/readings
-Get time-series sensor readings from the `sensor_readings` MongoDB collection.
+### GET /api/devices/floor/:floorNumber
+List all devices on a specific floor.
 
-**Query params:** `from` (ISO8601), `to` (ISO8601), `interval` (raw|1m|5m|1h|1d), `limit`
+**Path:** `floorNumber` (integer)
+**Query params:** `orgId` (optional)
 
-> `interval` values other than `raw` are computed via a MongoDB aggregation `$group`/`$dateTrunc` pipeline (previously TimescaleDB's `time_bucket()` — see `data-models/devices.md`).
+**Response 200:** Same shape as `GET /api/devices`
+
+**Errors:** `400 INVALID_FLOOR_NUMBER`, `400 ORG_ID_MISSING`, `403 FORBIDDEN`, `404 ORGANIZATION_NOT_FOUND`
+
+---
+
+### GET /api/devices/room/:roomNumber
+List all devices in a specific room.
+
+**Path:** `roomNumber` (string, e.g. `"101"`)
+**Query params:** `orgId` (optional)
+
+**Response 200:** Same shape as `GET /api/devices`
+
+---
+
+### GET /api/devices/:id
+Get a specific device by its MongoDB ObjectId.
 
 **Response 200:**
 ```json
-{
-  "deviceId": "665f1a2b9e1c4a0012abcdef",
-  "interval": "5m",
-  "data": [
-    {
-      "time": "2024-01-15T14:00:00Z",
-      "smokeLevel": 0.12,
-      "coPpm": 8.4,
-      "temperatureCelsius": 23.5,
-      "humidityPct": 52.0,
-      "wifiRssi": -65
-    }
-  ]
-}
+{ "success": true, "data": { /* device object */ } }
 ```
+
+**Errors:** `400 INVALID_DEVICE_ID`, `403 FORBIDDEN`, `404 DEVICE_NOT_FOUND`
 
 ---
 
-### POST /api/devices/:id/command
-Send a command to a device.
+## Products (`/api/products`) — Coming Soon
 
-**Access:** `dept_admin+`
+The `products` collection (device model catalog) is being added. It will expose:
+- `GET /api/products` — list all product definitions
+- `GET /api/products/:id` — get a specific product by ID
 
-**Request:**
-```json
-{
-  "command": "test_alarm",
-  "params": {}
-}
-```
-
-Valid commands: `test_alarm`, `silence_alarm`, `reboot`, `sync_config`
-
-**Response 202:**
-```json
-{
-  "commandId": "665f1a2b9e1c4a0012abcdef",
-  "status": "queued",
-  "message": "Command sent to device via MQTT"
-}
-```
+Products hold model-level data (modelNumber, hardwareVersions, latestSoftwareVersions, controls, features) shared across all physical units of the same model. IoT devices will fetch this on first boot when registering.
 
 ---
 
-## Alerts
+## Health
 
-### GET /api/alerts
-**Query params:** `status`, `severity`, `deviceId`, `departmentId`, `from`, `to`, `page`, `limit`
+### GET /health
+No auth required.
 
 **Response 200:**
 ```json
-{
-  "data": [
-    {
-      "id": "665f1a2b9e1c4a0012abcdef",
-      "type": "smoke",
-      "severity": "critical",
-      "status": "active",
-      "triggeredAt": "2024-01-15T14:32:00Z",
-      "device": {
-        "id": "665f1a2b9e1c4a0012abce02",
-        "deviceCode": "FX-0042",
-        "room": { "name": "Server Room 3B", "building": { "name": "Block A" } }
-      },
-      "sensorValues": { "smokeLevel": 0.87 }
-    }
-  ],
-  "pagination": { "page": 1, "limit": 20, "total": 3 }
-}
+{ "status": "ok", "timestamp": "2024-01-15T14:30:00Z" }
 ```
-
----
-
----
-
-## Device Logs
-
-Device logs are a unified, time-ordered log of every significant event that occurred on a specific device: alarms (alert/panic), power events, output state changes, mode switches (auto/manual), and test activations. The display UI fetches this from the backend and shows it in the **Device logs** screen (formerly "Alarm log").
-
-### GET /api/devices/:id/logs
-Fetch paginated device logs for a specific device, newest first.
-
-**Access:** `technician+`
-
-**Query params:**
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `page` | int | 1 | Page number |
-| `limit` | int | 20 | Items per page (max 100) |
-| `from` | ISO8601 | — | Start of time range (inclusive) |
-| `to` | ISO8601 | — | End of time range (inclusive) |
-| `type` | string | — | Filter by event type (see below) |
-
-**Event types:**
-
-| `type` | Description |
-|--------|-------------|
-| `alarm_alert` | Smoke level crossed alert threshold |
-| `alarm_panic` | Smoke level crossed panic threshold |
-| `alarm_cleared` | Alarm condition resolved |
-| `power_mains_lost` | Mains power lost, running on battery |
-| `power_mains_restored` | Mains power restored |
-| `battery_low` | Battery below configured low threshold |
-| `output_changed` | An output toggled (tube light, door lock, fan, buzzer, solenoid, smoke sensor) |
-| `mode_changed` | Operation mode switched between auto and manual |
-| `device_online` | Device came online |
-| `device_offline` | Device went offline (missed heartbeat) |
-| `test_activated` | Manual test mode activated from display |
-
-**Response 200:**
-```json
-{
-  "deviceId": "665f1a2b9e1c4a0012abcdef",
-  "data": [
-    {
-      "id": "665f1a2b9e1c4a0012abcf01",
-      "type": "alarm_alert",
-      "occurredAt": "2026-09-26T09:41:00Z",
-      "smokePct": 42,
-      "tempCelsius": 28.5,
-      "humidityPct": 55,
-      "personDetected": false,
-      "powerSource": "mains",
-      "batteryPct": 88,
-      "batteryVoltage": 24.6,
-      "outputStates": {
-        "tubelight": false,
-        "doorLock": true,
-        "powerFan": false,
-        "smokeSensor": true,
-        "buzzer": true,
-        "exhaustFan": false,
-        "solenoidValve": false
-      },
-      "meta": {}
-    }
-  ],
-  "pagination": { "page": 1, "limit": 20, "total": 47 }
-}
-```
-
-**Notes:**
-- `smokePct`, `tempCelsius`, `humidityPct`, `personDetected`, `batteryPct`, `batteryVoltage` are sensor snapshots captured at the moment the event occurred; they may be `null` for events where sensor context is not relevant (e.g. `device_online`).
-- `outputStates` is a snapshot of all output states at the time of the event; may be `null` for pure sensor events.
-- `meta` carries event-specific extra fields: e.g. `{ "output": "tubelight", "value": true }` for `output_changed`, `{ "mode": "manual" }` for `mode_changed`.
-- Logs are **write-once** — created by the MQTT telemetry / alert handlers on the backend; the display UI only reads them.
-- Logs are stored in the `device_logs` MongoDB collection (see schema below). Previously documented as a PostgreSQL table — see ADR-012.
-
-**MongoDB: `device_logs` collection:**
-```ts
-{
-  _id:              ObjectId,
-  deviceId:         ObjectId,   // ref: devices
-  type:             string,     // one of the event types above
-  occurredAt:       Date,
-  smokePct?:        number,
-  tempCelsius?:     number,
-  humidityPct?:     number,
-  personDetected?:  boolean,
-  powerSource?:     'mains' | 'battery',
-  batteryPct?:      number,
-  batteryVoltage?:  number,
-  outputStates?:    Mixed,
-  meta:             Mixed,      // default {}
-  createdAt:        Date,
-}
-```
-
-Compound indexes: `(deviceId, occurredAt DESC)` and `(deviceId, type)`.
-
----
-
-### POST /api/alerts/:id/acknowledge
-**Request:**
-```json
-{
-  "notes": "Investigated — steam from coffee machine triggered sensor. Cleaning unit."
-}
-```
-
-**Response 200:** Updated alert object
-
----
-
-### POST /api/alerts/:id/resolve
-**Request:**
-```json
-{
-  "notes": "Sensor cleaned and reset. Back to normal."
-}
-```
-
----
-
-## Tickets
-
-### GET /api/tickets
-**Query params:** `status`, `type`, `priority`, `assignedTo`, `deviceId`, `page`, `limit`
-
-**Response 200:**
-```json
-{
-  "data": [
-    {
-      "id": "665f1a2b9e1c4a0012abcdef",
-      "ticketNumber": "TKT-0042",
-      "type": "alert_response",
-      "status": "assigned",
-      "priority": "critical",
-      "title": "Smoke alert — Server Room 3B",
-      "assignedTo": {
-        "id": "665f1a2b9e1c4a0012abce03",
-        "fullName": "Ravi Kumar"
-      },
-      "device": {
-        "deviceCode": "FX-0042",
-        "room": { "name": "Server Room 3B" }
-      },
-      "createdAt": "2024-01-15T14:32:00Z"
-    }
-  ],
-  "pagination": { "page": 1, "limit": 20, "total": 8 }
-}
-```
-
----
-
-### GET /api/tickets/:id
-Returns full ticket including checklist items and comments.
-
-**Response 200:**
-```json
-{
-  "id": "665f1a2b9e1c4a0012abcdef",
-  "ticketNumber": "TKT-0042",
-  "type": "alert_response",
-  "status": "in_progress",
-  "priority": "critical",
-  "title": "Smoke alert — Server Room 3B",
-  "description": "Critical smoke alert triggered at 14:32. Device FX-0042.",
-  "device": { "id": "665f1a2b9e1c4a0012abce02", "deviceCode": "FX-0042" },
-  "alert": { "id": "665f1a2b9e1c4a0012abcf02", "type": "smoke", "triggeredAt": "2024-01-15T14:32:00Z" },
-  "assignedTo": { "id": "665f1a2b9e1c4a0012abce03", "fullName": "Ravi Kumar" },
-  "checklist": [
-    {
-      "id": "665f1a2b9e1c4a0012abcf03",
-      "itemOrder": 1,
-      "label": "Verify alarm condition",
-      "isRequired": true,
-      "isChecked": true,
-      "checkedAt": "2024-01-15T14:45:00Z"
-    }
-  ],
-  "comments": [],
-  "createdAt": "2024-01-15T14:32:00Z"
-}
-```
-
----
-
-### PATCH /api/tickets/:id
-Update ticket status, checklist, notes.
-
-**Request:**
-```json
-{
-  "status": "in_progress",
-  "checklistItems": [
-    { "id": "665f1a2b9e1c4a0012abcf03", "isChecked": true, "notes": "Steam confirmed from break room." }
-  ],
-  "resolutionNotes": "Steam from adjacent break room. Sensor cleaned."
-}
-```
-
----
-
-## Buildings
-
-### GET /api/buildings
-**Response 200:**
-```json
-{
-  "data": [
-    {
-      "id": "665f1a2b9e1c4a0012abce04",
-      "name": "Block A",
-      "address": "123 Industrial Area",
-      "city": "Mumbai",
-      "deviceCount": 24,
-      "activeAlertCount": 1
-    }
-  ]
-}
-```
-
----
-
-### GET /api/buildings/:id/floors
-**Response 200:**
-```json
-{
-  "buildingId": "665f1a2b9e1c4a0012abce04",
-  "floors": [
-    {
-      "id": "665f1a2b9e1c4a0012abce05",
-      "floorNumber": 3,
-      "floorName": "Third Floor",
-      "roomCount": 8,
-      "deviceCount": 12
-    }
-  ]
-}
-```
-
----
-
-## Error Response Format
-
-All error responses follow this shape:
-```json
-{
-  "error": "ERROR_CODE",
-  "message": "Human readable description",
-  "details": {}
-}
-```
-
-Common error codes: `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_ERROR`, `INVALID_OTP`, `OTP_EXPIRED`, `PHONE_NOT_REGISTERED`, `TOO_MANY_REQUESTS`, `INTERNAL_ERROR`
