@@ -54,23 +54,27 @@ Last updated: 2026-10-12
 ---
 
 ### `fireex-mobile` (React Native App, via Expo)
-**Status:** Scaffolded — navigation + screens wired, needs backend running
+**Status:** Active development — dashboard + full ticket flow live
 **Repo:** `~/Documents/Software_projects/fireex-mobile`
 
 **What's done:**
-- Full route tree for `user` and `serviceBoy` (technician) roles
-- Auth store (JWT in expo-secure-store), WebSocket client with reconnect/backoff
-- Design tokens, all screens stubbed
-- `npx tsc --noEmit`, lint, expo-doctor all clean
+- Full JWT auth flow (OTP login, token storage, refresh, auto-bearer headers)
+- `user` role → Dashboard with multi-org support, device listing, room grouping, search, status animations
+- `serviceBoy` role → Maintenance ticket list (status tabs, search), ticket detail (all fields, linked device), in-progress checklist
+- Real API integration: `/api/devices`, `/api/tickets/assigned`, `/api/tickets/:id`
+- `StatusPulse` animated component for ticket/device status
+- Device detail screen wired (navigated from ticket detail linked device card)
+- All screens lint and typecheck clean
 
 **Next steps:**
-1. Point at running backend (`http://localhost:4000/api` in dev)
-2. Wire ticket screens for `serviceBoy` role using new ticket endpoints
-3. Visual polish: icons, animations
-4. `expo-notifications` registration + backend device-token endpoint
+1. Profile screen (stubbed, needs real content)
+2. Device detail screen full implementation (currently basic)
+3. RoomDevicesScreen — tap room card on dashboard
+4. `expo-notifications` push registration
+5. WebSocket live telemetry
 
 **Blockers:**
-- Depends on backend reachable locally
+- None currently
 
 ---
 
@@ -141,3 +145,4 @@ Last updated: 2026-10-12
 - All API changes must be reflected here before or alongside implementation
 - All `id` fields from the backend are MongoDB ObjectId strings (24-char hex) — never UUIDs
 - **2026-10-12: Ticket system implemented in backend.** Role model updated with `serviceBoy` (distinct from `serviceBody`). JWT payload is now role-dependent — see `data-models/users.md`.
+- **2026-10-12: Mobile ticket flow complete.** `serviceBoy` role now has full ticket list → detail → in-progress flow with real API data. Seed re-run to fix device ID references in tickets.

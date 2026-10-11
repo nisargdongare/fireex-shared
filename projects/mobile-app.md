@@ -4,7 +4,7 @@
 
 A single React Native app for two user types: **facility users** (building occupants/managers) and **service technicians**. The role is determined post-authentication — the backend detects role from the registered phone number and returns it in the JWT. Same binary, UI adapts automatically.
 
-**Status:** Dashboard implemented with full multi-organization support (as of 2026-10-08)
+**Status:** Dashboard + full maintenance ticket flow implemented (as of 2026-10-12)
 **Design:** Completed — [UX Canvas](https://claude.ai/artifact/TFP8dCVRFBC61pEdJvKGW6) — contains all screens; read artboard `.dc.html` before building any screen
 **Repo:** `~/Documents/Software_projects/fireex-mobile`
 **Platform:** iOS + Android (+ web via Expo, for faster iteration)
@@ -45,6 +45,14 @@ A single React Native app for two user types: **facility users** (building occup
 - BottomTabBar (navigation)
 - StatusDot (animated status indicators)
 
+**Maintenance Ticket Flow (serviceBoy role):**
+- `/maintenance-tickets` — ticket list with status tabs (All/Open/In Progress/Closed/Other) + search
+- `/ticket-detail` — full ticket detail with linked device card, smart actions by status
+- `/ticket-in-progress` — interactive checklist, comments, resolve/close actions
+- Real API: `GET /api/tickets/assigned` and `GET /api/tickets/:ticketId`
+- `StatusPulse` component with animated critical/in_progress states
+- `serviceBoy` role routes here after login (not dashboard)
+
 ### 🔄 In Progress / Next Steps
 
 - [ ] RoomDevicesScreen - tap room to see devices
@@ -54,6 +62,7 @@ A single React Native app for two user types: **facility users** (building occup
 - [ ] WebSocket for live telemetry
 - [ ] Emergency alert screen
 - [ ] Offline support with caching
+- [ ] Profile screen (linked from both dashboard and ticket list headers)
 
 ---
 
@@ -291,6 +300,18 @@ Based on UX canvas artboard `project/DeviceDetail.dc.html`.
 - Offline cards (device/ticket): use `opacity: 0.65` wrapper style
 
 ---
+
+## Recent Changes (2026-10-12)
+
+✅ Built complete maintenance ticket flow: list → detail → in-progress (3 screens)
+✅ Real API integration: `/api/tickets/assigned` + `/api/tickets/:id`
+✅ Status filter tabs with per-tab colors and horizontal scroll
+✅ Multi-field search (org, room, floor, ticket ID, device name)
+✅ `StatusPulse` component with critical ring + in_progress breathing animations
+✅ Linked device card on ticket detail navigates to device detail screen
+✅ `serviceBoy` role routes to `/maintenance-tickets` after OTP login
+✅ Backend seed fixed — tickets now reference real device IDs
+✅ Icon additions: wrench, plusSquare, ticket, key
 
 ## Recent Changes (2026-10-08)
 
