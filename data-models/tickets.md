@@ -1,8 +1,8 @@
-# Data Model: Maintenance Tickets
+# Data Model: Tickets
 
-Maintenance tickets track all device inspection, repair, and maintenance work. They are created either automatically (triggered by an alert) or manually by a department admin or super admin.
+Tickets are created by `serviceBody` (company dashboard users) to assign work to a `serviceBoy` (field technician). Two types: installing a new device, or maintaining an existing one.
 
-> **Database note (ADR-012):** All collections below are MongoDB collections accessed via Mongoose, not PostgreSQL tables. `id` fields are MongoDB ObjectId strings, not UUIDs. `ticket_checklist_items`, `ticket_comments`, and `ticket_attachments` are now embedded arrays on the ticket document itself — see below.
+> **Database note (ADR-012):** MongoDB collection via Mongoose. All `id` fields are ObjectId strings.
 
 ---
 
@@ -10,29 +10,23 @@ Maintenance tickets track all device inspection, repair, and maintenance work. T
 
 | Type | Description |
 |------|-------------|
-| `alert_response` | Created automatically when an alert is raised. Assigned to the on-call technician for the building. |
-| `scheduled_maintenance` | Periodic inspection ticket (e.g., monthly device check). |
-| `corrective_maintenance` | Created manually to fix a known issue that did not trigger an alert. |
-| `installation` | Created when a new device needs to be installed or an existing one replaced. |
+| `installation` | A new device needs to be installed at a location. No `deviceId` — the device doesn't exist yet. `floor` + `room` describe where to install. |
+| `maintenance` | An existing device needs inspection, repair, or servicing. `deviceId` references the existing device. |
 
 ---
 
-## Ticket Status Flow
-
-```
-open → assigned → in_progress → resolved
-  ↓                    ↓
-cancelled           pending_parts → in_progress → resolved
-```
+## Ticket Status
 
 | Status | Description |
 |--------|-------------|
-| `open` | Ticket created, not yet assigned to a technician |
-| `assigned` | Assigned to a technician, not yet started |
-| `in_progress` | Technician has begun work |
-| `pending_parts` | Paused, waiting for replacement parts |
-| `resolved` | Work complete, device operational |
-| `cancelled` | Ticket cancelled (false alarm, duplicate, etc.) |
+| `open` | Created, not yet started |
+| `in_progress` | serviceBoy has started work |
+| `resolved` | Work complete — `resolvedAt` is auto-set |
+| `closed` | Administratively closed by serviceBody |
+
+Status transitions:
+- `serviceBody` can set any status via `PATCH /api/tickets/:id`
+- `serviceBoy` can only move to `in_progress` or `resolved` on their own ticket via `PATCH /api/tickets/:id/progress`
 
 ---
 
@@ -40,140 +34,73 @@ cancelled           pending_parts → in_progress → resolved
 
 ```ts
 {
-  _id:               ObjectId,
-  ticketNumber:      string,     // human-readable: "TKT-0042" — unique index
-  type:              'alert_response' | 'scheduled_maintenance' | 'corrective_maintenance' | 'installation',
-  status:            'open' | 'assigned' | 'in_progress' | 'pending_parts' | 'resolved' | 'cancelled',  // default 'open', indexed
-  priority:          'low' | 'normal' | 'high' | 'critical',  // default 'normal'
-  deviceId:          ObjectId,   // ref: devices, indexed
-  alertId?:          ObjectId,   // ref: alerts — if triggered by an alert
-  assignedTo?:       ObjectId,   // ref: users (technician), indexed
-  createdBy:         ObjectId,   // ref: users
-  title:             string,
-  description?:      string,
-  resolutionNotes?:  string,
-  scheduledFor?:     Date,       // for scheduled maintenance
-  startedAt?:        Date,
-  resolvedAt?:       Date,
-  dueAt?:            Date,
-  checklist:         [ChecklistItem],    // embedded array, see below
-  comments:          [TicketComment],    // embedded array, see below
-  attachments:       [TicketAttachment], // embedded array, see below
-  createdAt:         Date,
-  updatedAt:         Date,
-}
-```
-
----
-
-## Embedded: `ChecklistItem` (within `tickets.checklist[]`)
-
-Each ticket has a checklist that the technician completes during the inspection. Previously a separate `ticket_checklist_items` table — now an embedded subdocument array, since checklist items are always fetched and updated together with their parent ticket (see `PATCH /api/tickets/:id`).
-
-```ts
-{
-  _id:          ObjectId,    // Mongoose auto-generates a subdocument _id, used to target updates
-  itemOrder:    number,
-  label:        string,      // e.g. "Test smoke detector sensitivity"
-  isRequired:   boolean,     // default true
-  isChecked:    boolean,     // default false
-  checkedAt?:   Date,
-  checkedBy?:   ObjectId,    // ref: users
-  notes?:       string,
-}
-```
-
-### Default Checklist by Ticket Type
-
-**`alert_response`:**
-1. Device confirmed maintenance mode (pre-checked after technician enters code on device)
-2. Inspect site for fire/smoke damage (visual inspection)
-3. Inspect and clean MQ2 smoke sensor chamber
-4. Check sprinkler valve status — if triggered, reset physical valve and restock water supply
-5. Test device after resolution (buzzer, LEDs, exhaust fan, all sensors)
-6. Reset device alarm state in backend
-
-**`scheduled_maintenance`:**
-1. Visual inspection of unit and mounting
-2. Clean smoke sensor chamber
-3. Test smoke detection (using test spray)
-4. Test CO sensor response
-5. Test buzzer and LED indicators
-6. Check battery backup level
-7. Verify WiFi connectivity and MQTT reporting
-8. Document any wear or damage
-
-**`installation`:**
-1. Confirm mounting location approved
-2. Mount device per installation guide
-3. Connect power (12V DC)
-4. Program device ID and credentials via USB serial
-5. Verify device comes online (MQTT connection confirmed)
-6. Test all sensors and actuators
-7. Assign device to room in backend
-8. Attach device label
-
----
-
-## Embedded: `TicketComment` (within `tickets.comments[]`)
-
-```ts
-{
-  _id:        ObjectId,
-  authorId:   ObjectId,   // ref: users
-  body:       string,
-  createdAt:  Date,
-}
-```
-
----
-
-## Embedded: `TicketAttachment` (within `tickets.attachments[]`)
-
-Photos taken during inspection:
-
-```ts
-{
   _id:          ObjectId,
-  uploadedBy:   ObjectId,   // ref: users
-  fileUrl:      string,     // cloud storage URL
-  fileType?:    string,     // image/jpeg, image/png, etc.
+  orgId:        ObjectId,    // ref: organisations — the client org this ticket is for
+  deviceId?:    ObjectId,    // ref: devices — present for 'maintenance', absent for 'installation'
+  assignedTo?:  ObjectId,    // ref: users (serviceBoy)
+  createdBy:    ObjectId,    // ref: users (serviceBody who created the ticket)
+
+  type:         'installation' | 'maintenance',
+  status:       'open' | 'in_progress' | 'resolved' | 'closed',   // default 'open'
+  priority:     'low' | 'medium' | 'high' | 'critical',           // default 'medium'
+
+  title:        string,
+  description?: string,
+
+  floor?: { floorsNo: number, name: string },
+  room?:  { roomNumber: string, name: string },
+
+  scheduledAt?: Date,
+  resolvedAt?:  Date,    // auto-set when status changes to 'resolved'
+  notes?:       string,
+
+  isActive:     boolean,   // default true (soft-delete guard)
   createdAt:    Date,
+  updatedAt:    Date,
 }
 ```
 
----
-
-## Ticket Number Generation
-
-Format: `TKT-NNNN` (e.g., `TKT-0042`)
-- Sequential 4-digit counter, zero-padded to 4 digits minimum
-- Generated in backend at ticket creation (currently derived from collection document count; consider a dedicated counter document if concurrent creation becomes an issue, since MongoDB has no auto-increment sequence primitive), never by the client
+### Indexes
+- `{ orgId, status }` — org dashboard queries
+- `{ assignedTo, status }` — serviceBoy assigned list
+- `{ createdBy }` — audit queries
 
 ---
 
-## Priority Assignment Rules
+## API: Tickets — Role-Enforced
 
-| Scenario | Priority |
-|----------|----------|
-| Alert triggered (smoke/CO above threshold) | `critical` |
-| Alert triggered (temperature threshold) | `high` |
-| Device offline > 1 hour | `high` |
-| Device offline < 1 hour | `normal` |
-| Scheduled maintenance | `low` |
-| Manual corrective | `normal` (admin can override) |
+### serviceBody (dashboard) endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/tickets` | Create a ticket (installation or maintenance) |
+| `GET` | `/api/tickets/org/:orgId` | All tickets for an org |
+| `PATCH` | `/api/tickets/:ticketId` | Update: assign serviceBoy, priority, status, title, description, scheduledAt, notes |
+| `GET` | `/api/tickets/:ticketId` | View any ticket detail |
+
+`user` role → **403 Forbidden** on all the above.
+
+### serviceBoy (field technician) endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/tickets/assigned` | Own assigned tickets — userId from JWT, no path param |
+| `PATCH` | `/api/tickets/:ticketId/progress` | Update status (`in_progress` or `resolved`) + notes. Only works on tickets assigned to them. |
+| `GET` | `/api/tickets/:ticketId` | View detail of a ticket assigned to them only |
+
+`user` role → **403 Forbidden** on all the above.
 
 ---
 
-## API: Tickets
+## Seed Data
 
-| Endpoint | Access | Description |
-|----------|--------|-------------|
-| `POST /api/tickets` | dept_admin+, system | Create a ticket |
-| `GET /api/tickets` | technician+ | List tickets (technician sees assigned; admin sees dept) |
-| `GET /api/tickets/:id` | technician+ | Get ticket details with checklist |
-| `PATCH /api/tickets/:id` | technician (own) + admin | Update status, checklist, notes |
-| `POST /api/tickets/:id/comments` | technician+ | Add comment |
-| `POST /api/tickets/:id/attachments` | technician | Upload photo attachment |
+10 tickets seeded, all assigned to Priya Sharma (`9999999999`, serviceBoy):
 
-See `api-contracts/rest-api.md` for full request/response shapes.
+Per org (×2 orgs = 10 total):
+- `installation` / priority `high` / status `open` — install smoke detector near staircase
+- `installation` / priority `medium` / status `in_progress` — install sprinkler controller in Medical Bay
+- `maintenance` / priority `low` / status `open` — Smoke Detector inspection
+- `maintenance` / priority `medium` / status `open` — Heat Detector inspection
+- `maintenance` / priority `high` / status `in_progress` — Alarm Panel (false alarm note)
+
+Creator: Raj Kumar (`7777777777`, serviceBody).

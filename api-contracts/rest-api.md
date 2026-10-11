@@ -1,13 +1,12 @@
 # FireEx REST API Contracts
 
-Base URL: `https://api.fireex.com/api` (production TBD)
-Dev URL: `http://localhost:3000/api`
-Swagger UI: `http://localhost:3000/api/docs`
+Base URL (dev): `http://localhost:4000/api`
+Swagger UI: `http://localhost:4000/api/docs`
 
-All requests and responses use `Content-Type: application/json`.
+All requests/responses use `Content-Type: application/json`.
 Authentication: `Authorization: Bearer <access_token>` on all protected routes.
 
-> All `id` fields are MongoDB ObjectId strings (24-char hex, e.g. `"665f1a2b9e1c4a0012abcdef"`).
+> All `id` fields are MongoDB ObjectId strings (24-char hex).
 
 ---
 
@@ -20,92 +19,49 @@ Authentication: `Authorization: Bearer <access_token>` on all protected routes.
 
 **Error:**
 ```json
-{ "success": false, "error": "ERROR_CODE", "message": "Human-readable description" }
+{ "success": false, "error": "ERROR_CODE", "message": "..." }
 ```
 
 ---
 
-## Authentication (`/api/auth`)
+## Auth (`/api/auth`)
 
 ### POST /api/auth/otp/request
-Request OTP sent to the user's registered mobile number. Public — no JWT required.
-
-**Request:**
+Public. Sends OTP to registered mobile.
 ```json
+// Request
 { "mobileNumber": "8888888888" }
-```
-`mobileNumber` is 10 digits, no country code.
-
-**Response 200:**
-```json
+// Response 200
 { "success": true, "message": "OTP sent successfully. Check your SMS." }
 ```
-
-**Errors:** `400 VALIDATION_ERROR`, `404 PHONE_NOT_REGISTERED`, `500 INTERNAL_SERVER_ERROR`
+Errors: `400 VALIDATION_ERROR`, `404 PHONE_NOT_REGISTERED`
 
 ---
 
 ### POST /api/auth/otp/verify
-Verify OTP and receive JWT tokens. Public — no JWT required.
-
-**Request:**
+Public. Verify OTP, receive JWT tokens.
 ```json
+// Request
 { "mobileNumber": "8888888888", "otp": "123456" }
 ```
-
-**Response 200:**
-```json
-{
-  "success": true,
-  "data": {
-    "accessToken": "eyJ...",
-    "refreshToken": "eyJ...",
-    "user": {
-      "_id": "665f1a2b9e1c4a0012abcdef",
-      "mobileNumber": "8888888888",
-      "appRole": "user",
-      "firstName": "John",
-      "lastName": "Doe",
-      "organizations": [{ "_id": "...", "name": "FireEx Services" }],
-      "email": "john@example.com",
-      "isActive": true
-    }
-  }
-}
-```
-
-**Errors:** `400 INVALID_OTP`, `400 OTP_EXPIRED`, `400 OTP_NOT_FOUND`, `403 USER_INACTIVE`, `404 PHONE_NOT_REGISTERED`
+Response shape same as `/api/users/login` (see below).
+Errors: `400 INVALID_OTP`, `400 OTP_EXPIRED`, `403 USER_INACTIVE`, `404 PHONE_NOT_REGISTERED`
 
 ---
 
 ### POST /api/auth/refresh
-Exchange a refresh token for a new access + refresh token pair. Public — no JWT required.
-
-**Request:**
+Public. Exchange refresh token for new token pair.
 ```json
 { "refreshToken": "eyJ..." }
 ```
-
-**Response 200:**
-```json
-{ "success": true, "data": { "accessToken": "eyJ...", "refreshToken": "eyJ..." } }
-```
-
-**Errors:** `401 INVALID_REFRESH_TOKEN`, `401 REFRESH_TOKEN_EXPIRED`, `401 REFRESH_TOKEN_REVOKED`, `403 USER_INACTIVE`
+Response: `{ "success": true, "data": { "accessToken": "...", "refreshToken": "..." } }`
 
 ---
 
 ### POST /api/auth/logout
-Revoke a refresh token. **Requires JWT.**
-
-**Request:**
+**Requires JWT.** Revokes refresh token.
 ```json
 { "refreshToken": "eyJ..." }
-```
-
-**Response 200:**
-```json
-{ "success": true, "message": "Logout successful" }
 ```
 
 ---
@@ -113,162 +69,160 @@ Revoke a refresh token. **Requires JWT.**
 ## Users (`/api/users`)
 
 ### POST /api/users/login
-Direct login by mobile number — no OTP step. Returns user + JWT tokens. Public — no JWT required.
-> Used for dev/test. The production login flow is OTP-based via `/api/auth/otp/request` + `/otp/verify`.
-
-**Request:**
+Public (dev convenience — no OTP). Login by mobile number.
 ```json
+// Request
 { "mobileNumber": "8888888888" }
-```
 
-**Response 200:**
-```json
+// Response 200 — user / serviceBody role
 {
   "success": true,
   "data": {
     "accessToken": "eyJ...",
     "refreshToken": "eyJ...",
     "user": {
-      "_id": "...",
-      "mobileNumber": "8888888888",
-      "appRole": "user",
-      "firstName": "John",
-      "lastName": "Doe",
-      "email": "john@example.com",
-      "address": "123 Main St",
-      "city": "New Delhi",
-      "state": "Delhi",
-      "pincode": "110001",
-      "organizations": [{ "_id": "...", "name": "FireEx Services" }],
+      "_id": "...", "mobileNumber": "8888888888", "appRole": "user",
+      "firstName": "John", "lastName": "Doe",
+      "email": "...", "address": "...", "city": "...", "state": "...", "pincode": "...",
+      "organizations": [{ "_id": "...", "name": "FireEx Services HQ" }],
+      "isActive": true
+    }
+  }
+}
+
+// Response 200 — serviceBoy role (orgId instead of organizations)
+{
+  "success": true,
+  "data": {
+    "accessToken": "eyJ...",
+    "refreshToken": "eyJ...",
+    "user": {
+      "_id": "...", "mobileNumber": "9999999999", "appRole": "serviceBoy",
+      "firstName": "Priya", "lastName": "Sharma",
+      "orgId": "...",
       "isActive": true
     }
   }
 }
 ```
-
-**Errors:** `400 VALIDATION_ERROR`, `403 USER_INACTIVE`, `404 USER_NOT_FOUND`
+Errors: `400 VALIDATION_ERROR`, `403 USER_INACTIVE`, `404 USER_NOT_FOUND`
 
 ---
 
 ### GET /api/users/me
-Get the currently authenticated user's full profile. **Requires JWT.**
-
-**Response 200:**
-```json
-{
-  "success": true,
-  "data": {
-    "_id": "...",
-    "mobileNumber": "8888888888",
-    "appRole": "user",
-    "firstName": "John",
-    "lastName": "Doe",
-    "email": "john@example.com",
-    "address": "123 Main St",
-    "city": "New Delhi",
-    "state": "Delhi",
-    "pincode": "110001",
-    "organizations": [{ "_id": "...", "name": "FireEx Services" }],
-    "isActive": true
-  }
-}
-```
+**Requires JWT.** Returns authenticated user's profile.
 
 ---
 
 ## Devices (`/api/devices`)
 
-All device endpoints **require JWT**. `orgId` can be passed as a query param; if omitted, the first org from the user's JWT `organizations[]` is used. Users can only access devices belonging to their own organizations.
+All endpoints **require JWT**. `orgId` query param optional — defaults to first org in user's JWT `organizations[]`. Users can only access their own orgs' devices.
 
 ### GET /api/devices
-List all devices for an organization.
+List all devices for an org.
+**Query:** `?orgId=` (optional)
+**Response:** `{ "success": true, "data": { "organization": {...}, "deviceList": [...] } }`
 
-**Query params:** `orgId` (optional)
+### GET /api/devices/floor/:floorNumber
+Filter by floor number. **Query:** `?orgId=`
 
-**Response 200:**
+### GET /api/devices/room/:roomNumber
+Filter by room number string. **Query:** `?orgId=`
+
+### GET /api/devices/:id
+Single device by ObjectId.
+
+Errors: `403 FORBIDDEN`, `404 DEVICE_NOT_FOUND`, `400 ORG_ID_MISSING`
+
+---
+
+## Products (`/api/products`)
+
+Public catalog of device model definitions.
+
+### GET /api/products
+List all products.
+
+### GET /api/products/:id
+Single product.
+
+---
+
+## Tickets (`/api/tickets`)
+
+All endpoints **require JWT**. Access is role-enforced — `user` role gets **403** on all ticket endpoints.
+
+### POST /api/tickets
+**Role: `serviceBody` only.** Create a ticket.
+```json
+// Request
+{
+  "orgId": "...",
+  "type": "installation",           // or "maintenance"
+  "title": "Install smoke detector near staircase",
+  "priority": "high",               // low | medium | high | critical (default: medium)
+  "deviceId": "...",                // required for maintenance; omit for installation
+  "assignedTo": "...",              // serviceBoy userId (optional at creation)
+  "description": "...",
+  "floor": { "floorsNo": 1, "name": "Ground Floor" },
+  "room": { "roomNumber": "104", "name": "Staircase Area" },
+  "scheduledAt": "2026-10-15T09:00:00Z",
+  "notes": "..."
+}
+// Response 201
+{ "success": true, "data": { /* ticket document */ } }
+```
+
+---
+
+### GET /api/tickets/org/:orgId
+**Role: `serviceBody` only.** All active tickets for an org (dashboard view).
+Populates: `assignedTo` (name, mobile), `deviceId` (name, serial), `createdBy` (name).
+
+---
+
+### PATCH /api/tickets/:ticketId
+**Role: `serviceBody` only.** Update any ticket field.
 ```json
 {
-  "success": true,
-  "data": {
-    "organization": {
-      "_id": "...", "name": "FireEx Services", "email": "...", "mobileNumber": "...",
-      "address": "...", "city": "...", "state": "...", "pincode": "...",
-      "gstNumber": "...", "registrationNumber": "...", "isActive": true,
-      "createdAt": "...", "updatedAt": "..."
-    },
-    "deviceList": [
-      {
-        "_id": "...",
-        "deviceName": "Smoke Detector 1",
-        "deviceType": "smoke_detector",
-        "floor": { "floorsNo": 1, "name": "Ground Floor" },
-        "room": { "roomNumber": "101", "name": "Main Office" },
-        "status": "active",
-        "location": "Near entrance",
-        "serialNumber": "SN-001",
-        "installationDate": "2024-01-01T00:00:00Z",
-        "isActive": true,
-        "createdAt": "...", "updatedAt": "..."
-      }
-    ]
-  }
+  "assignedTo": "...",    // serviceBoy userId
+  "status": "in_progress",
+  "priority": "critical",
+  "title": "...",
+  "description": "...",
+  "scheduledAt": "2026-10-15T09:00:00Z",
+  "notes": "..."
 }
 ```
 
-**Errors:** `400 ORG_ID_MISSING`, `400 INVALID_ORG_ID`, `403 FORBIDDEN`, `404 ORGANIZATION_NOT_FOUND`
+---
+
+### GET /api/tickets/assigned
+**Role: `serviceBoy` only.** Returns all tickets assigned to the authenticated serviceBoy. No path param — userId comes from JWT `sub`.
 
 ---
 
-### GET /api/devices/floor/:floorNumber
-List all devices on a specific floor.
-
-**Path:** `floorNumber` (integer)
-**Query params:** `orgId` (optional)
-
-**Response 200:** Same shape as `GET /api/devices`
-
-**Errors:** `400 INVALID_FLOOR_NUMBER`, `400 ORG_ID_MISSING`, `403 FORBIDDEN`, `404 ORGANIZATION_NOT_FOUND`
-
----
-
-### GET /api/devices/room/:roomNumber
-List all devices in a specific room.
-
-**Path:** `roomNumber` (string, e.g. `"101"`)
-**Query params:** `orgId` (optional)
-
-**Response 200:** Same shape as `GET /api/devices`
-
----
-
-### GET /api/devices/:id
-Get a specific device by its MongoDB ObjectId.
-
-**Response 200:**
+### PATCH /api/tickets/:ticketId/progress
+**Role: `serviceBoy` only.** serviceBoy updates status/notes on a ticket assigned to them.
 ```json
-{ "success": true, "data": { /* device object */ } }
+{
+  "status": "in_progress",   // or "resolved"
+  "notes": "..."
+}
 ```
-
-**Errors:** `400 INVALID_DEVICE_ID`, `403 FORBIDDEN`, `404 DEVICE_NOT_FOUND`
+Returns `403` if the ticket is not assigned to this serviceBoy.
+`resolvedAt` is auto-set when status = `resolved`.
 
 ---
 
-## Products (`/api/products`) — Coming Soon
-
-The `products` collection (device model catalog) is being added. It will expose:
-- `GET /api/products` — list all product definitions
-- `GET /api/products/:id` — get a specific product by ID
-
-Products hold model-level data (modelNumber, hardwareVersions, latestSoftwareVersions, controls, features) shared across all physical units of the same model. IoT devices will fetch this on first boot when registering.
+### GET /api/tickets/:ticketId
+**Role: `serviceBody` or `serviceBoy`.** Get ticket detail.
+- `serviceBody` can view any ticket.
+- `serviceBoy` can only view tickets assigned to them (403 otherwise).
 
 ---
 
 ## Health
 
 ### GET /health
-No auth required.
-
-**Response 200:**
-```json
-{ "status": "ok", "timestamp": "2024-01-15T14:30:00Z" }
-```
+No auth. `{ "status": "ok", "timestamp": "..." }`

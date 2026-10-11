@@ -2,18 +2,17 @@
 
 All users in FireEx are pre-registered — there is no self-signup. A user's role is determined by their record in the database, set by an admin at registration time.
 
-> **Database note (ADR-012):** All collections below are MongoDB collections accessed via Mongoose, not PostgreSQL tables. `id` fields are MongoDB ObjectId strings, not UUIDs. Foreign-key-style fields (`departmentId`, `createdBy`, etc.) are ObjectId references, validated and populated in application code — there is no database-level `FOREIGN KEY` constraint.
+> **Database note (ADR-012):** All collections are MongoDB via Mongoose. `id` fields are MongoDB ObjectId strings (24-char hex). No database-level foreign key constraints — enforced in application code.
 
 ---
 
 ## Roles
 
-| Role | Description |
-|------|-------------|
-| `end_user` | Building occupant or resident. Can view status and alerts for their assigned building(s). |
-| `technician` | Service technician. Can view and action maintenance tickets, perform device inspections. |
-| `dept_admin` | Department administrator. Manages users, devices, and buildings within their department. |
-| `super_admin` | System-wide administrator. Full access to everything. |
+| Role | App | Description |
+|------|-----|-------------|
+| `user` | Mobile | Client/end user. Belongs to one or more client orgs. Views device status and alerts for their orgs. |
+| `serviceBody` | Web dashboard | Company dashboard user. Manages tickets, assigns serviceBoys, sees all org data. |
+| `serviceBoy` | Mobile | Field technician employed by FireEx. Receives and action tickets. |
 
 ---
 
@@ -21,31 +20,71 @@ All users in FireEx are pre-registered — there is no self-signup. A user's rol
 
 ```ts
 {
-  _id:            ObjectId,
-  phoneNumber:    string,     // E.164 format: +1234567890 — unique index
-  fullName:       string,
-  email?:         string,     // optional; shown on Profile screen
-  role:           'end_user' | 'technician' | 'dept_admin' | 'super_admin',
-  departmentId?:  ObjectId,   // ref: departments — NULL for super_admin
-  designation?:   string,     // job title e.g. "Senior Fire Safety Officer"
-  employeeId?:    string,     // org employee ID shown on Profile screen
-  site?:          string,     // physical site / campus name
-  householdRole?: 'owner' | 'member',  // for building-level membership
-  isActive:       boolean,    // default true
-  createdBy?:     ObjectId,   // ref: users — which admin registered this user
-  createdAt:      Date,
-  updatedAt:      Date,
+  _id:             ObjectId,
+  mobileNumber:    string,      // 10-digit, unique index — login identifier
+  appRole:         'user' | 'serviceBody' | 'serviceBoy',
+  firstName:       string,
+  lastName:        string,
+  email?:          string,
+  address?:        string,
+  city?:           string,
+  state?:          string,
+  pincode?:        string,
+
+  // For 'user' and 'serviceBody': the orgs they belong to (can be multiple)
+  organizationIds: ObjectId[],  // ref: organisations
+
+  // For 'serviceBoy' ONLY: their single employer org (FireEx company)
+  // organizationIds is empty [] for serviceBoy
+  orgId?:          ObjectId,    // ref: organisations
+
+  isActive:        boolean,     // default true
+  createdAt:       Date,
+  updatedAt:       Date,
 }
 ```
 
 ### Field Notes
-- `phoneNumber`: stored in E.164 format (e.g., `+911234567890`). This is the login identifier and is shown with "Verified" badge on Profile screen. Unique index enforced via Mongoose schema + a unique MongoDB index.
-- `role`: a single role per user. Roles are not composable — a technician cannot also be a dept_admin.
-- `departmentId`: required for `end_user`, `technician`, `dept_admin`. Absent for `super_admin`.
-- `designation`, `employeeId`, `site`: confirmed from Profile screen WORK DETAILS section.
-- `email`: shown in CONTACT section of Profile screen; optional.
-- `householdRole`: `owner` or `member` — determines whether the user can invite others to the building group. Shown in Profile ACCESS section.
-- `isActive`: soft-delete / deactivation mechanism. Deactivated users cannot log in.
+- `mobileNumber`: 10-digit Indian mobile number (no country code). Unique index. Login identifier.
+- `appRole`: single role per user, not composable.
+- `organizationIds`: for `user` and `serviceBody` — the client organisations they belong to. Can belong to multiple.
+- `orgId`: for `serviceBoy` only — the single FireEx company org they are employed by. `organizationIds` must be `[]` for serviceBoy.
+
+---
+
+## JWT Payload — Role-Dependent
+
+After login (OTP or direct), the backend issues a JWT whose payload differs by role:
+
+**`user` / `serviceBody`:**
+```json
+{
+  "sub": "665f1a2b9e1c4a0012abcdef",
+  "mobileNumber": "8888888888",
+  "appRole": "user",
+  "organizations": [
+    { "_id": "665f...", "name": "FireEx Services HQ" },
+    { "_id": "665f...", "name": "Emergency Response Unit Mumbai" }
+  ],
+  "iat": 1700000000,
+  "exp": 1700000900
+}
+```
+
+**`serviceBoy`:**
+```json
+{
+  "sub": "665f1a2b9e1c4a0012abcdef",
+  "mobileNumber": "9999999999",
+  "appRole": "serviceBoy",
+  "orgId": "665f1a2b9e1c4a0012abcd01",
+  "iat": 1700000000,
+  "exp": 1700000900
+}
+```
+
+- `serviceBoy` gets `orgId` (their employer), NOT `organizations`.
+- Access token expires: 15 minutes. Refresh token: 30 days.
 
 ---
 
@@ -54,17 +93,12 @@ All users in FireEx are pre-registered — there is no self-signup. A user's rol
 ```ts
 {
   _id:        ObjectId,
-  userId:     ObjectId,   // ref: users, indexed
-  code:       string,     // bcrypt hash, 6-digit OTP
-  expiresAt:  Date,
-  usedAt?:    Date,
+  mobileNumber: string,   // indexed
+  otp:        string,     // bcrypt hash of 6-digit OTP
+  expiresAt:  Date,       // 5-minute window
   createdAt:  Date,
 }
 ```
-
-- OTPs expire in 5 minutes
-- Once used, `usedAt` is set and the code cannot be reused
-- Max 3 active OTPs per user at a time (rate limiting at API level, enforced in application code)
 
 ---
 
@@ -72,30 +106,40 @@ All users in FireEx are pre-registered — there is no self-signup. A user's rol
 
 ```ts
 {
-  _id:         ObjectId,
-  userId:      ObjectId,   // ref: users, indexed
-  tokenHash:   string,     // bcrypt hash of the token — unique index
-  deviceId?:   string,     // optional: mobile device identifier
-  expiresAt:   Date,
-  revokedAt?:  Date,
-  createdAt:   Date,
+  _id:       ObjectId,
+  userId:    ObjectId,   // ref: users
+  token:     string,     // raw token value
+  expiresAt: Date,       // 30 days
+  createdAt: Date,
 }
 ```
 
-- Refresh tokens expire in 30 days
-- Revoking a token sets `revokedAt`; backend checks this on every refresh
-- `deviceId` allows "log out this device" functionality
-
 ---
 
-## MongoDB: `departments` Collection
+## MongoDB: `organisations` Collection
 
 ```ts
 {
-  _id:        ObjectId,
-  name:       string,
-  code:       string,    // short identifier e.g. "FIRE_DEPT_A" — unique index
-  isActive:   boolean,   // default true
+  _id:                ObjectId,
+  name:               string,    // unique
+  email?:             string,
+  mobileNumber?:      string,
+  address?:           string,
+  city?:              string,
+  state?:             string,
+  pincode?:           string,
+  registrationNumber?: string,
+  gstNumber?:         string,
+  website?:           string,
+  description?:       string,
+  buildingStructure?: [
+    {
+      floorsNo: number,
+      name:     string,
+      Rooms: [{ roomNumber: string, name: string }],
+    }
+  ],
+  isActive:   boolean,
   createdAt:  Date,
   updatedAt:  Date,
 }
@@ -103,51 +147,25 @@ All users in FireEx are pre-registered — there is no self-signup. A user's rol
 
 ---
 
-## JWT Payload Structure
-
-After OTP verification, the backend issues a JWT with this payload:
-
-```json
-{
-  "sub": "665f1a2b9e1c4a0012abcdef",
-  "phone": "+911234567890",
-  "role": "technician",
-  "departmentId": "665f1a2b9e1c4a0012abcd01",
-  "iat": 1700000000,
-  "exp": 1700000900
-}
-```
-
-- `sub` and `departmentId` are MongoDB ObjectId strings (24-char hex), not UUIDs.
-- Access token expires: 15 minutes
-- Refresh token expires: 30 days (stored as httpOnly cookie on web, MMKV on mobile)
-
----
-
-## API: User Management (Super Admin Only)
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /api/users` | Register a new user |
-| `GET /api/users` | List all users (filterable by role, department) |
-| `GET /api/users/:id` | Get user by ID |
-| `PATCH /api/users/:id` | Update user details or role |
-| `DELETE /api/users/:id` | Deactivate user (soft delete, sets `isActive = false`) |
-
-See `api-contracts/rest-api.md` for full request/response shapes.
-
----
-
 ## Role Capabilities Matrix
 
-| Capability | end_user | technician | dept_admin | super_admin |
-|-----------|----------|-----------|------------|-------------|
-| View building/device status | ✓ (own dept) | ✓ (own dept) | ✓ (own dept) | ✓ (all) |
-| Receive alerts | ✓ (own dept) | ✓ (own dept) | ✓ (own dept) | ✓ (all) |
-| View alert history | ✓ (own dept) | ✓ (own dept) | ✓ (own dept) | ✓ (all) |
-| View maintenance tickets | ✗ | ✓ (assigned) | ✓ (own dept) | ✓ (all) |
-| Update ticket status | ✗ | ✓ (assigned) | ✗ | ✓ (all) |
-| Manage devices | ✗ | ✗ | ✓ (own dept) | ✓ (all) |
-| Manage users | ✗ | ✗ | ✓ (own dept) | ✓ (all) |
-| Manage departments | ✗ | ✗ | ✗ | ✓ |
-| System configuration | ✗ | ✗ | ✗ | ✓ |
+| Capability | `user` | `serviceBody` | `serviceBoy` |
+|-----------|--------|--------------|-------------|
+| View devices for their org | ✓ | ✓ | ✗ |
+| Create tickets | ✗ | ✓ | ✗ |
+| View org tickets (dashboard) | ✗ | ✓ | ✗ |
+| Update ticket (assign, priority, status) | ✗ | ✓ | ✗ |
+| View own assigned tickets | ✗ | ✗ | ✓ |
+| Update own ticket progress (status/notes) | ✗ | ✗ | ✓ |
+| View ticket detail | ✗ | ✓ (any) | ✓ (own only) |
+
+---
+
+## Seed Test Users
+
+| Mobile | Role | Name |
+|--------|------|------|
+| `8888888888` | `user` | John Doe — both orgs |
+| `9999999999` | `serviceBoy` | Priya Sharma — 10 tickets assigned |
+| `7777777777` | `serviceBody` | Raj Kumar — created the tickets |
+| `6666666666` | `user` | Arjun Verma — both orgs |
