@@ -10,7 +10,7 @@ Tickets are created by `serviceBody` (company dashboard users) to assign work to
 
 | Type | Description |
 |------|-------------|
-| `installation` | A new device needs to be installed at a location. No `deviceId` — the device doesn't exist yet. `floor` + `room` describe where to install. |
+| `installation` | A new device needs to be installed at a location. No `deviceId` — the device doesn't exist yet. `productId` specifies which product model to install. `floor` + `room` describe where to install. |
 | `maintenance` | An existing device needs inspection, repair, or servicing. `deviceId` references the existing device. |
 
 ---
@@ -37,6 +37,7 @@ Status transitions:
   _id:          ObjectId,
   orgId:        ObjectId,    // ref: organisations — the client org this ticket is for
   deviceId?:    ObjectId,    // ref: devices — present for 'maintenance', absent for 'installation'
+  productId?:   ObjectId,    // ref: products — present for 'installation'; the product model to be provisioned
   assignedTo?:  ObjectId,    // ref: users (serviceBoy)
   createdBy:    ObjectId,    // ref: users (serviceBody who created the ticket)
 
@@ -92,15 +93,81 @@ Status transitions:
 
 ---
 
+## GET /api/tickets/:ticketId — Response Shape
+
+The detail endpoint populates all refs and reshapes keys for clarity:
+
+```json
+{
+  "_id": "...",
+  "type": "installation",
+  "status": "open",
+  "priority": "high",
+  "title": "Install smoke detector near main staircase",
+  "description": "...",
+  "floor": { "floorsNo": 1, "name": "Ground Floor" },
+  "room": { "roomNumber": "104", "name": "Staircase Area" },
+  "scheduledAt": "...",
+  "resolvedAt": null,
+  "notes": "...",
+  "isActive": true,
+  "createdAt": "...",
+  "updatedAt": "...",
+
+  "org": {
+    "_id": "...",
+    "name": "FireEx Services HQ",
+    "city": "New Delhi",
+    "address": "789 Fire Station Road"
+  },
+
+  "product": {
+    "_id": "...",
+    "modelNumber": "FX-SD-100",
+    "name": "FireEx Smoke Detector Pro",
+    "productType": "Optical Smoke Detector",
+    "category": "smoke_detector"
+  },
+
+  "device": null,
+
+  "assignedTo": {
+    "_id": "...",
+    "firstName": "Priya",
+    "lastName": "Sharma",
+    "mobileNumber": "9999999999"
+  },
+
+  "createdBy": {
+    "_id": "...",
+    "firstName": "Admin",
+    "lastName": "FireEx"
+  },
+
+  "wifiNetworks": [
+    { "ssid": "DONGARE", "password": "12345678" },
+    { "ssid": "FireEx-HQ-Guest", "password": "guest@2024" }
+  ]
+}
+```
+
+**Key notes:**
+- `orgId` → renamed to `org` (populated)
+- `productId` → renamed to `product` (populated); null for maintenance tickets
+- `deviceId` → renamed to `device` (populated); null for installation tickets
+- `wifiNetworks` — derived from `org.wifiCredentials`; exposes `ssid` and `password` only (no `username`)
+
+---
+
 ## Seed Data
 
 10 tickets seeded, all assigned to Priya Sharma (`9999999999`, serviceBoy):
 
 Per org (×2 orgs = 10 total):
-- `installation` / priority `high` / status `open` — install smoke detector near staircase
-- `installation` / priority `medium` / status `in_progress` — install sprinkler controller in Medical Bay
+- `installation` / priority `high` / status `open` — install smoke detector (productId: FX-SD-100)
+- `installation` / priority `medium` / status `in_progress` — install sprinkler controller (productId: FX-SP-300)
 - `maintenance` / priority `low` / status `open` — Smoke Detector inspection
 - `maintenance` / priority `medium` / status `open` — Heat Detector inspection
 - `maintenance` / priority `high` / status `in_progress` — Alarm Panel (false alarm note)
 
-Creator: Raj Kumar (`7777777777`, serviceBody).
+Creator: Admin FireEx (`5555555555`, serviceBody).
