@@ -55,6 +55,7 @@ A single React Native app for two user types: **facility users** (building occup
 
 ### 🔄 In Progress / Next Steps
 
+- [ ] BLE Device Provisioning screen (see BLE section below)
 - [ ] RoomDevicesScreen - tap room to see devices
 - [ ] DeviceDetailScreen - sensor readings and controls
 - [ ] ChatScreen & SettingsScreen
@@ -298,6 +299,89 @@ Based on UX canvas artboard `project/DeviceDetail.dc.html`.
 - Controls (fan, buzzer, arm): optimistic UI — toggle immediately, revert on API error
 - Sensor readings on DeviceDetail: live via WebSocket `device.telemetry` events while screen is open
 - Offline cards (device/ticket): use `opacity: 0.65` wrapper style
+
+---
+
+---
+
+## BLE Device Provisioning (Technician Flow)
+
+Used by the **technician** role to set up a new FireEx device on-site via Bluetooth.
+
+### Library
+Use `react-native-ble-plx` (well-maintained, works on iOS + Android via Expo dev client).
+
+### BLE Constants
+```js
+const BLE_DEVICE_NAME   = "FireEx";
+const SERVICE_UUID      = "0000ABCD-0000-1000-8000-00805F9B34FB"; // full 128-bit form of "ABCD"
+const CHAR_UUID         = "00001234-0000-1000-8000-00805F9B34FB"; // full 128-bit form of "1234"
+```
+
+### Manufacturer Data — Reading Model Number
+During scan, each advertising packet contains manufacturer specific data:
+- Bytes 0–1: `0xFF 0xFF` (company ID — skip these)
+- Bytes 2–N: ASCII model number string e.g. `"FX-SD-100"`
+
+```js
+// Parse model number from scan result
+const mfrData = device.manufacturerData; // base64-encoded bytes
+const bytes = Buffer.from(mfrData, 'base64');
+const modelNumber = bytes.slice(2).toString('ascii'); // skip 2-byte company ID
+// Use modelNumber to fetch product config from server
+```
+
+### Full Provisioning Flow
+
+```
+1. Request BLE permissions (Android: BLUETOOTH_SCAN + BLUETOOTH_CONNECT; iOS: NSBluetoothAlwaysUsageDescription)
+2. Scan for devices named "FireEx"
+3. Read manufacturer data → extract model number (e.g. "FX-SD-100")
+4. Use model number → GET /api/products?model=FX-SD-100 → get product features
+5. GET /api/devices/provision → server assigns UDN for this installation
+6. Connect to device
+7. Request MTU = 512 (negotiate max before writing)
+8. Subscribe to notifications on CHAR_UUID
+9. Write "MODEL_NUMBER:" → wait for notify → verify response = "MODEL_NUMBER:FireEx"
+10. Build CONFIG payload (see format below)
+11. Write CONFIG payload as SINGLE write (MTU negotiated, fits in one packet)
+12. Wait for notify → verify response = "CONFIG:OK"
+13. Write "RESTART:" → wait for "RESTART:OK"
+14. Device reboots — provisioning complete
+15. POST /api/devices/:deviceId/activate to mark device as provisioned on backend
+```
+
+### CONFIG Payload Format (app → device)
+```
+CONFIG:{"udn":"FX00123","ssid":"WiFiName","pass":"WiFiPass","mqtt_host":"broker.fireex.in","mqtt_port":"1883","mqtt_topic":"FX00123","http_url":"https://api.fireex.in","show_serial":false}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `udn` | string | Unique Device Number from server |
+| `ssid` | string | Wi-Fi SSID for the installation site |
+| `pass` | string | Wi-Fi password |
+| `mqtt_host` | string | MQTT broker hostname |
+| `mqtt_port` | string | MQTT port e.g. `"1883"` |
+| `mqtt_topic` | string | MQTT base topic (usually same as UDN) |
+| `http_url` | string | Backend API base URL |
+| `show_serial` | boolean | `false` for production |
+
+> All values are strings **except** `show_serial` which is a JSON boolean (no quotes).
+
+### Other BLE Commands
+| Write | Expected notify response | Use |
+|-------|--------------------------|-----|
+| `MODEL_NUMBER:` | `MODEL_NUMBER:FireEx` | Verify correct device before provisioning |
+| `RESTART:` | `RESTART:OK` | Reboot device after provisioning |
+| `RESET:` | `RESET:OK` | Factory reset — clears all credentials |
+
+### Important Implementation Notes
+- Always request MTU 512 before writing CONFIG (`device.requestMTU(512)` in react-native-ble-plx)
+- Send CONFIG as a **single write** — do not chunk manually
+- If device disconnects mid-flow, restart from step 6 (re-connect) — the accumulation buffer on the device resets on disconnect
+- The device re-starts advertising automatically after disconnect so re-connection always works
+- GSM APN is **not** provisioned via BLE — the device reads it automatically from the SIM card
 
 ---
 

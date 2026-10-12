@@ -321,14 +321,83 @@ When `accepted: true`, device enters maintenance mode. The technician app is not
 
 ---
 
-## Provisioning (New Device Setup)
+## BLE Provisioning (Device Setup via Mobile App)
 
-Done once at manufacture / installation:
-1. Flash firmware via USB + PlatformIO
-2. Open Serial Monitor at 115200 baud
-3. Send provisioning command: `PROVISION {deviceId} {mqttUsername} {mqttPassword}`
-4. Firmware stores credentials in NVS, reboots
-5. Device connects to WiFi (SSID/password hardcoded in `credentials.h` for site WiFi, or configured via BLE provisioning TBD)
+Done once during installation by a technician using the mobile app.
+
+### BLE Constants (master firmware)
+| Item | Value |
+|------|-------|
+| Advertised device name | `"FireEx"` |
+| Service UUID | `"ABCD"` (16-bit short) |
+| Characteristic UUID | `"1234"` (16-bit short); READ + WRITE + NOTIFY |
+| Manufacturer data | `[0xFF, 0xFF] + "<model_number>"` e.g. `FF FF 46 58 2D 53 44 2D 31 30 30` = "FX-SD-100" |
+| Model number define | `BLE_MODEL_NUMBER "FX-SD-100"` |
+
+### BLE Setup Trigger
+- On boot: master reads NVS key `"udn"`. If empty → `g_config_mode = true` (BLE mode on demand)
+- Display slave BLE screen → user taps **Start BLE Setup** → slave sends `{"t":"cmd","action":"ble_start"}` over UART → master calls `ble_setup()`
+- If `"udn"` is present on boot → normal WiFi/MQTT mode; BLE setup can still be triggered from screen (re-provisioning warning shown)
+
+### Provisioning Flow
+1. Master advertises as `"FireEx"` + service UUID + manufacturer data (model number)
+2. Phone scans → reads model number from manufacturer data → fetches product config from server
+3. Phone connects → subscribes to notifications on characteristic `"1234"`
+4. Phone writes `MODEL_NUMBER:` → device responds `MODEL_NUMBER:FireEx` (verify correct device)
+5. Phone writes `CONFIG:{...json...}` → device parses, saves to NVS, responds `CONFIG:OK`
+6. Phone writes `RESTART:` → device responds `RESTART:OK` → reboots into normal mode
+
+### CONFIG Payload Format (phone → device)
+```
+CONFIG:{"udn":"FX00123","ssid":"WiFiName","pass":"WiFiPass","mqtt_host":"broker.fireex.in","mqtt_port":"1883","mqtt_topic":"FX00123","http_url":"https://api.fireex.in","show_serial":false}
+```
+
+| JSON key | Type | Max | Description |
+|----------|------|-----|-------------|
+| `udn` | string | 32 | Unique Device Number — assigned by server on device registration |
+| `ssid` | string | 32 | Wi-Fi SSID |
+| `pass` | string | 64 | Wi-Fi password |
+| `mqtt_host` | string | 64 | MQTT broker hostname/IP |
+| `mqtt_port` | string | 6 | MQTT broker port e.g. `"1883"` or `"8883"` |
+| `mqtt_topic` | string | 64 | MQTT base topic (usually same as UDN) |
+| `http_url` | string | 128 | Base URL for HTTP/HTTPS API calls |
+| `show_serial` | bool | — | Enable serial debug output |
+
+> **GSM APN is NOT provisioned via BLE.** The master will query the SIM800L over UART using AT commands (`AT+CGDCONT?`) to auto-detect the APN after WiFi connects.
+
+### Other BLE Commands
+| Command | Response | Effect |
+|---------|----------|--------|
+| `MODEL_NUMBER:` | `MODEL_NUMBER:FireEx` | Identity check |
+| `RESTART:` | `RESTART:OK` | Reboots device |
+| `RESET:` | `RESET:OK` | Clears all NVS credentials |
+
+### Chunk Handling
+The `onWrite` callback uses an **accumulation buffer** (`std::string accum`). For `CONFIG:` commands it waits until the closing `}` is received before processing — handles cases where the phone splits the write across multiple BLE packets. Phone should still negotiate MTU ≥ 250 bytes and send as a single write for best reliability.
+
+### NVS Layout (master, namespace `"fireex"`)
+| Key | Type | Description |
+|-----|------|-------------|
+| `udn` | String | Primary identity; empty = unprovisioned |
+| `ssid` | String | Wi-Fi SSID |
+| `password` | String | Wi-Fi password |
+| `mqtt_host` | String | MQTT broker domain |
+| `mqtt_port` | String | MQTT port |
+| `mqtt_topic` | String | MQTT base topic |
+| `http_url` | String | HTTP/HTTPS API base URL |
+| `show_serial` | Bool | Serial debug flag |
+
+### BLE Progress UART Frames (master → slave display)
+During provisioning, master sends live progress frames over UART so the display shows a progress bar:
+```json
+{"t":"ble_progress","pct":10,"step":"Advertising..."}
+{"t":"ble_progress","pct":20,"step":"Phone connected"}
+{"t":"ble_progress","pct":40,"step":"Saving credentials"}
+{"t":"ble_progress","pct":80,"step":"Verifying"}
+{"t":"ble_progress","pct":100,"step":"Done"}
+{"t":"ble_status","state":"done","udn":"FX00123"}
+{"t":"ble_status","state":"failed"}
+```
 
 ---
 

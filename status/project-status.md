@@ -1,6 +1,6 @@
 # FireEx Project Status
 
-Last updated: 2026-10-12
+Last updated: 2026-10-12 (BLE provisioning update)
 
 ---
 
@@ -98,12 +98,20 @@ Last updated: 2026-10-12
 - UART link working: master sends state frames every 1s
 - All 6 output GPIOs working
 - PIN persistence in NVS, post-reboot boot flow
+- **BLE provisioning implemented:**
+  - Master advertises as "FireEx" with service UUID `ABCD` + manufacturer data (model number `FX-SD-100`)
+  - Slave "Start BLE Setup" button triggers master BLE via UART command
+  - `CONFIG:{json}` received over BLE → parsed and saved to NVS (namespace `"fireex"`)
+  - Live progress bar on slave display updated via `ble_progress` UART frames during provisioning
+  - Chunk-safe accumulation buffer in `onWrite` handles split BLE writes
+  - `configMode` determined by NVS `udn` key presence on boot
 
 **Next steps:**
 1. Wire real MQ2 ADC read (currently hardcoded)
 2. Wire DHT22 temp/humidity
-3. Implement MQTT client on master
+3. Implement MQTT client on master using NVS-stored credentials
 4. Wire UART state frame → live g_model update on slave display
+5. Boot-time `boot_info` UART frame → slave shows UDN on BLE screen if already provisioned
 
 ---
 
@@ -135,7 +143,10 @@ Last updated: 2026-10-12
 | MQTT broker (prod) | TBD |
 | Cloud hosting | TBD |
 | SMS provider | TBD |
-| WiFi provisioning approach | TBD |
+| WiFi provisioning approach | **Resolved: BLE provisioning (CONFIG JSON over GATT)** |
+| BLE model identification | **Resolved: manufacturer data bytes 2–N = ASCII model number** |
+| NVS config keys (master) | **Resolved: udn, ssid, password, mqtt_host, mqtt_port, mqtt_topic, http_url, show_serial** |
+| GSM APN provisioning | **Resolved: auto-detected from SIM800L via AT commands, not via BLE** |
 
 ---
 
