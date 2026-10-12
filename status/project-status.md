@@ -1,6 +1,6 @@
 # FireEx Project Status
 
-Last updated: 2026-10-12 (BLE provisioning update)
+Last updated: 2026-10-13 (BLE provisioning complete in mobile)
 
 ---
 
@@ -24,11 +24,13 @@ Last updated: 2026-10-12 (BLE provisioning update)
 - JWT: role-aware payload — `user`/`serviceBody` get `organizations[]`, `serviceBoy` gets `orgId`
 - Device API: list, by-floor, by-room, by-id — org-scoped access control
 - Product API: list and detail
-- **Ticket system** (new):
+- **Ticket system:**
   - Types: `installation` (new device), `maintenance` (existing device)
   - Status: `open` → `in_progress` → `resolved` / `closed`
   - Role-enforced: `serviceBody` creates/manages, `serviceBoy` views/updates own tickets, `user` blocked (403)
   - Endpoints: `POST /api/tickets`, `GET /api/tickets/org/:orgId`, `PATCH /api/tickets/:ticketId`, `GET /api/tickets/assigned`, `PATCH /api/tickets/:ticketId/progress`, `GET /api/tickets/:ticketId`
+- **Device provisioning:**
+  - `POST /api/devices/register` — public endpoint (no auth), body `{ productId, ticketId }` → auto-generates UDN, sets device name from product catalog, resolves org/floor/room from ticket
 - Roles: `user`, `serviceBody`, `serviceBoy` — all three working with correct JWT payloads
 - Swagger UI at `/api/docs`
 - Seed script (`scripts/seed.ts`) seeds products, orgs, users, devices, and 10 tickets
@@ -46,6 +48,7 @@ Last updated: 2026-10-12 (BLE provisioning update)
 2. WebSocket broadcasting — plugin registered, no broadcast logic yet
 3. Real SMS OTP delivery (currently logs to console in dev)
 4. Cloud hosting decision
+5. Ticket auto-close after device provisioning (`POST /api/devices/register` could close the linked ticket or a separate endpoint)
 
 **Blockers:**
 - SMS provider not chosen
@@ -54,27 +57,36 @@ Last updated: 2026-10-12 (BLE provisioning update)
 ---
 
 ### `fireex-mobile` (React Native App, via Expo)
-**Status:** Active development — dashboard + full ticket flow live
+**Status:** Active development — dashboard + full ticket flow + BLE provisioning live
 **Repo:** `~/Documents/Software_projects/fireex-mobile`
 
 **What's done:**
 - Full JWT auth flow (OTP login, token storage, refresh, auto-bearer headers)
 - `user` role → Dashboard with multi-org support, device listing, room grouping, search, status animations
 - `serviceBoy` role → Maintenance ticket list (status tabs, search), ticket detail (all fields, linked device), in-progress checklist
-- Real API integration: `/api/devices`, `/api/tickets/assigned`, `/api/tickets/:id`
+- Real API integration: `/api/devices`, `/api/tickets/assigned`, `/api/tickets/:id`, `/api/devices/register`
 - `StatusPulse` animated component for ticket/device status
-- Device detail screen wired (navigated from ticket detail linked device card)
+- Device detail screen with full product info, hardware/software, features
+- **BLE Device Provisioning (`/add-device`):**
+  - Real BLE scan via `react-native-ble-plx`
+  - Model mismatch guard (manufacturer data bytes 2–N = ASCII model number)
+  - MTU negotiation, `MODEL_NUMBER:` verify, `CONFIG:{json}` write, `RESTART:` command
+  - `registerDevice()` calls `POST /api/devices/register` with `productId + ticketId`
+  - Active ticket in Redux (`ticketSlice`) — `ticket-detail.tsx` dispatches before navigation
+- Requires dev client (Expo Go does not support BLE native module)
 - All screens lint and typecheck clean
 
 **Next steps:**
-1. Profile screen (stubbed, needs real content)
-2. Device detail screen full implementation (currently basic)
-3. RoomDevicesScreen — tap room card on dashboard
+1. RoomDevicesScreen — tap room card on dashboard to see device list
+2. Device controls (fan, buzzer, arm) via REST
+3. Profile screen
 4. `expo-notifications` push registration
-5. WebSocket live telemetry
+5. WebSocket live telemetry on device detail
+6. Ticket auto-close after successful BLE provisioning (needs backend endpoint)
 
 **Blockers:**
-- None currently
+- BLE provisioning requires a physical dev client build (no Expo Go)
+- Firmware BLE not live yet (archived code, not in active build) — provisioning flow built ahead of firmware
 
 ---
 
@@ -98,20 +110,16 @@ Last updated: 2026-10-12 (BLE provisioning update)
 - UART link working: master sends state frames every 1s
 - All 6 output GPIOs working
 - PIN persistence in NVS, post-reboot boot flow
-- **BLE provisioning implemented:**
-  - Master advertises as "FireEx" with service UUID `ABCD` + manufacturer data (model number `FX-SD-100`)
-  - Slave "Start BLE Setup" button triggers master BLE via UART command
-  - `CONFIG:{json}` received over BLE → parsed and saved to NVS (namespace `"fireex"`)
-  - Live progress bar on slave display updated via `ble_progress` UART frames during provisioning
-  - Chunk-safe accumulation buffer in `onWrite` handles split BLE writes
-  - `configMode` determined by NVS `udn` key presence on boot
+- BLE provisioning code exists in `src/master/archive/main_master.cpp` — service UUID `ABCD`, char UUID `1234`, advertises as `"FireEx"`, accepts `CONFIG:{json}` and `RESTART:` commands
+  - **NOT active in current build** — excluded by `platformio.ini` `build_src_filter`. Needs to be extracted from archive and wired into the active build.
 
 **Next steps:**
-1. Wire real MQ2 ADC read (currently hardcoded)
-2. Wire DHT22 temp/humidity
-3. Implement MQTT client on master using NVS-stored credentials
-4. Wire UART state frame → live g_model update on slave display
-5. Boot-time `boot_info` UART frame → slave shows UDN on BLE screen if already provisioned
+1. Wire BLE from archive into active master build (activate BLE provisioning)
+2. Wire real MQ2 ADC read (currently hardcoded)
+3. Wire DHT22 temp/humidity
+4. Implement MQTT client on master using NVS-stored credentials
+5. Wire UART state frame → live g_model update on slave display
+6. Boot-time `boot_info` UART frame → slave shows UDN on BLE screen if already provisioned
 
 ---
 
@@ -147,6 +155,9 @@ Last updated: 2026-10-12 (BLE provisioning update)
 | BLE model identification | **Resolved: manufacturer data bytes 2–N = ASCII model number** |
 | NVS config keys (master) | **Resolved: udn, ssid, password, mqtt_host, mqtt_port, mqtt_topic, http_url, show_serial** |
 | GSM APN provisioning | **Resolved: auto-detected from SIM800L via AT commands, not via BLE** |
+| BLE UUIDs (interim) | **Resolved interim: SERVICE=`ABCD`, CHAR=`1234` — matches archived firmware; update both when BLE goes live in active build** |
+| `/api/devices/register` auth | **Resolved: public (no auth required) — designed for provisioning flow** |
+| Ticket auto-close on provisioning | TBD — mobile sends `ticketId` to register endpoint; backend could close ticket automatically |
 
 ---
 
@@ -155,5 +166,6 @@ Last updated: 2026-10-12 (BLE provisioning update)
 - `fireex-shared` is the single source of truth for all cross-project decisions
 - All API changes must be reflected here before or alongside implementation
 - All `id` fields from the backend are MongoDB ObjectId strings (24-char hex) — never UUIDs
+- **2026-10-13: BLE device provisioning complete in mobile.** `/add-device` screen fully wired — real BLE scan, model validation, register API, CONFIG payload, RESTART. Redux `ticketSlice` bridges ticket context. Firmware BLE still in archive (not live). UUIDs `ABCD`/`1234` are interim pending firmware activation.
 - **2026-10-12: Ticket system implemented in backend.** Role model updated with `serviceBoy` (distinct from `serviceBody`). JWT payload is now role-dependent — see `data-models/users.md`.
 - **2026-10-12: Mobile ticket flow complete.** `serviceBoy` role now has full ticket list → detail → in-progress flow with real API data. Seed re-run to fix device ID references in tickets.

@@ -4,7 +4,7 @@
 
 A single React Native app for two user types: **facility users** (building occupants/managers) and **service technicians**. The role is determined post-authentication — the backend detects role from the registered phone number and returns it in the JWT. Same binary, UI adapts automatically.
 
-**Status:** Dashboard + full maintenance ticket flow implemented (as of 2026-10-12)
+**Status:** Dashboard + full maintenance ticket flow + BLE device provisioning implemented (as of 2026-10-13)
 **Design:** Completed — [UX Canvas](https://claude.ai/artifact/TFP8dCVRFBC61pEdJvKGW6) — contains all screens; read artboard `.dc.html` before building any screen
 **Repo:** `~/Documents/Software_projects/fireex-mobile`
 **Platform:** iOS + Android (+ web via Expo, for faster iteration)
@@ -53,17 +53,34 @@ A single React Native app for two user types: **facility users** (building occup
 - `StatusPulse` component with animated critical/in_progress states
 - `serviceBoy` role routes here after login (not dashboard)
 
+**BLE Device Provisioning (serviceBoy, installation tickets):**
+- `/add-device` screen with multi-step flow: scan → verify → wifi → registering → provisioning → done
+- Real BLE scan via `useBLE.ts` hook (react-native-ble-plx) — no mock devices
+- Model mismatch guard: reads manufacturer data from BLE advertising packet, compares to `ticket.product.modelNumber` before connecting; shows mismatch modal if wrong device
+- Connects, negotiates MTU, sends `MODEL_NUMBER:` command to verify device identity
+- Reads `ticket.wifiNetworks[]` array for Wi-Fi selection (populated from backend on the ticket detail)
+- Calls `POST /api/devices/register` with `{ productId: ticket.product._id, ticketId: ticket._id }` — backend auto-generates UDN, sets device name from product catalog
+- Sends `CONFIG:{json}` payload over BLE — full format: `{ udn, ssid, pass, mqtt_host, mqtt_port, mqtt_topic, http_url, show_serial }`
+- MQTT constants from `src/constants/mqtt.ts`: `host: "broker.fireex.in"`, `port: "1883"`, `httpUrl: "https://api.fireex.in"`
+- Sends `RESTART:` command after successful config write
+- Active ticket carried via Redux (`ticketSlice`) — `ticket-detail.tsx` dispatches `setActiveTicket` before navigating to `/add-device`
+- Device-detail "Set up device via BLE" button also routes to `/add-device`
+
+**Device Detail Screen:**
+- Full product info, hardware/software versions, feature pills
+- Location grid (status, floor, room, location)
+- "Set up device via BLE" button routes to `/add-device`
+
 ### 🔄 In Progress / Next Steps
 
-- [ ] BLE Device Provisioning screen (see BLE section below)
-- [ ] RoomDevicesScreen - tap room to see devices
-- [ ] DeviceDetailScreen - sensor readings and controls
+- [ ] RoomDevicesScreen — tap room card on dashboard to see device list
+- [ ] Device controls (fan, buzzer, arm) via REST
 - [ ] ChatScreen & SettingsScreen
-- [ ] Device control endpoints (fan, buzzer, arm)
-- [ ] WebSocket for live telemetry
+- [ ] WebSocket for live telemetry on device detail
 - [ ] Emergency alert screen
 - [ ] Offline support with caching
 - [ ] Profile screen (linked from both dashboard and ticket list headers)
+- [ ] Ticket auto-close after successful device provisioning (backend side)
 
 ---
 
@@ -143,7 +160,7 @@ App launch
   → Store JWT (with organizations array)
   → Route based on role:
       user            → Dashboard (UserTabs)
-      technician      → MaintenanceDashboard (TechTabs)
+      serviceBoy      → MaintenanceDashboard (TechTabs)
 ```
 
 ---
@@ -161,15 +178,116 @@ RootNavigator (Stack)
         │     ├── HomeTab → DashboardScreen ✅
         │     ├── ChatTab → SupportScreen (placeholder)
         │     └── SettingsTab → SettingsScreen (placeholder)
-        │                     └── ProfileScreen
         │
-        └── TechnicianTabs (role: technician)
-              ├── TicketsTab → MaintenanceDashboardScreen
-              └── ProfileTab → ProfileScreen
+        └── TechnicianTabs (role: serviceBoy)
+              └── TicketsTab → MaintenanceDashboard ✅
+                    ├── /ticket-detail ✅
+                    ├── /ticket-in-progress ✅
+                    └── /add-device ✅ (BLE provisioning)
 ```
 
-Bottom nav (facility user): Home · Chat · Settings (3 tabs)
-Bottom nav (technician): Tickets (single primary view)
+---
+
+## State Management (Redux)
+
+**Store:** `src/store/index.ts` — Redux Toolkit with `@reduxjs/toolkit` + `react-redux`
+
+**Slices:**
+- `ticketSlice` (`src/store/ticketSlice.ts`) — holds `activeTicket: TicketDetail | null`
+  - `setActiveTicket(ticket)` — called in `ticket-detail.tsx` when ticket loads, so `/add-device` can read `ticket.product._id`, `ticket.wifiNetworks`, etc. without re-fetching
+  - `clearActiveTicket()` — called on logout or when leaving the provisioning flow
+
+**Why Redux for active ticket:** The `/add-device` screen is a separate route with no direct props channel from ticket-detail. Redux slice bridges the data without requiring URL params for complex objects.
+
+---
+
+## BLE Device Provisioning — Full Flow
+
+### Entry Points
+1. `ticket-detail.tsx` — installation ticket "Add device" button → dispatches `setActiveTicket(ticket)` → navigates to `/add-device?ticketId=...`
+2. `device-detail.tsx` — "Set up device via BLE" button → navigates to `/add-device?deviceId=...&deviceName=...`
+
+### Screen Steps (`src/app/add-device.tsx`)
+```
+scan → verifying → wifi → registering → provisioning → done
+```
+
+| Step | What happens |
+|------|-------------|
+| `scan` | BLE permission request + scan for `"FireEx"` devices. Shows pulsing Bluetooth icon while scanning. Lists found devices with RSSI. |
+| (pair tap) | Reads manufacturer data → checks model matches `ticket.product.modelNumber`. Shows mismatch modal if wrong. Connects to device. |
+| `verifying` | Sends `MODEL_NUMBER:` over BLE, waits for response to confirm device identity. |
+| `wifi` | Shows connected device pill. Lists `ticket.wifiNetworks[]` in bottom-sheet picker. |
+| `registering` | Calls `POST /api/devices/register` — gets back `udn` and device record. |
+| `provisioning` | Negotiates MTU, sends `CONFIG:{json}` over BLE, sends `RESTART:`. |
+| `done` | Success screen with "Done" → `router.back()`. |
+
+### Hook: `src/hooks/useBLE.ts`
+Wraps `react-native-ble-plx`. Key exports:
+- `requestPermissions()` — Android 12+ needs BLUETOOTH_SCAN + BLUETOOTH_CONNECT; older Android needs ACCESS_FINE_LOCATION; iOS returns true
+- `startBluetooth()` — checks BLE state, returns `'on' | 'off'`
+- `scanForPeripherials()` — scans for devices whose name includes `"FireEx"`, deduplicates
+- `stopScan()`
+- `allDevices: Device[]`
+- `connectToDevice(device)` → `Promise<boolean>`
+- `sendRequestAndReceiveResponse(device, serviceUUID, charUUID, command)` — colon-prefixed RPC with 9s timeout
+- `readManufacturerData(device)` → `string | null` — parses model number from bytes 2–N of manufacturer data
+- `negotiateMTU(device)` → `Promise<number>` — requests MTU 512
+
+### BLE Constants (interim — pending real firmware UUIDs)
+```ts
+const BLE_SERVICE_UUID = 'ABCD';
+const BLE_CHAR_UUID    = '1234';
+```
+These match what's in the archived firmware source. Will be updated once firmware BLE goes live.
+
+### API: `POST /api/devices/register`
+- **Auth:** NOT required (public provisioning endpoint by design)
+- **Body:** `{ productId: string, ticketId: string }`
+- **Response:** `{ success: true, data: { _id, udn, deviceName, orgId, floor, room, status, isActive, createdAt, updatedAt } }`
+- The backend auto-generates a unique UDN, sets `deviceName` from the linked product, resolves org/floor/room from the ticket context
+- `registerDevice()` wrapper in `src/services/protectedApiClient.ts` (currently uses authenticated client — no-auth is fine too since JWT is available at this point)
+
+### CONFIG Payload Sent Over BLE
+```json
+{
+  "udn": "FX00123",
+  "ssid": "WiFiName",
+  "pass": "WiFiPass",
+  "mqtt_host": "broker.fireex.in",
+  "mqtt_port": "1883",
+  "mqtt_topic": "FX00123",
+  "http_url": "https://api.fireex.in",
+  "show_serial": false
+}
+```
+Sent as `CONFIG:{json}` — device expects the prefix.
+
+### MQTT Constants (`src/constants/mqtt.ts`)
+```ts
+export const MQTT_CONFIG = {
+  host: 'broker.fireex.in',
+  port: '1883',
+  httpUrl: 'https://api.fireex.in',
+} as const;
+```
+
+### Types Added (`src/types/api.ts`)
+- `WifiNetwork { ssid: string; password: string }`
+- `TicketDetailProduct { _id, modelNumber, name, category, productType }`
+- `TicketDetail.product: TicketDetailProduct` — populated from backend
+- `TicketDetail.wifiNetworks: WifiNetwork[]` — list of site Wi-Fi networks on the ticket
+- `RegisterDeviceRequest { productId: string; ticketId: string }`
+- `RegisterDeviceData { _id, udn, deviceName, orgId, floor, room, status, isActive, createdAt, updatedAt }`
+- `RegisterDeviceResponse { success, data?, error? }`
+
+### Requires Dev Client
+`react-native-ble-plx` has native code — Expo Go does not work. Build with:
+```bash
+npx expo run:android   # local dev client
+# or
+bunx eas-cli build --profile development   # EAS cloud build
+```
 
 ---
 
@@ -198,46 +316,6 @@ Bottom nav (technician): Tickets (single primary view)
 │ ... (ordered worst to best)      │
 ├─────────────────────────────────┤
 │ Home | Chat | Settings          │ ← Bottom Tabs
-└─────────────────────────────────┘
-```
-
----
-
-## DeviceDetail Screen Layout
-
-Based on UX canvas artboard `project/DeviceDetail.dc.html`.
-
-```
-┌─────────────────────────────────┐
-│ ← Back  Kitchen       [Armed]   │ ← Header
-│          FireEx — 4F2A          │
-├─────────────────────────────────┤
-│ ┌──────────┐ ┌──────────┐      │
-│ │ Smoke 4% │ │ Temp 22°C│      │ ← 2×2 Sensor Grid
-│ └──────────┘ └──────────┘      │
-│ ┌──────────┐ ┌──────────┐      │
-│ │ Humid 48%│ │Battery 92│      │
-│ └──────────┘ └──────────┘      │
-├─────────────────────────────────┤
-│ Controls                        │
-│ [Fan icon]  Exhaust fan  [off]  │
-│ [Mute icon] Mute buzzer  [off]  │
-│ [Lock icon] Armed        [on]   │
-├─────────────────────────────────┤
-│ [ Request maintenance ]         │
-│ Sprinkler reset needs a tech... │
-├─────────────────────────────────┤
-│ Device details                  │
-│ Device ID       FX-4F2A-003     │
-│ Firmware        v2.3.1          │
-│ Wi-Fi           Office-5G       │
-│ GSM backup      Jio · 4 bars    │
-│ Smoke sensor    MQ2 · reading OK│
-│ Last synced     2 min ago       │
-├─────────────────────────────────┤
-│ Recent activity                 │
-│ ● Armed by Priya   Today 8:02AM │
-│ ● Connectivity restored  Yesterday│
 └─────────────────────────────────┘
 ```
 
@@ -292,7 +370,6 @@ Based on UX canvas artboard `project/DeviceDetail.dc.html`.
 
 - OTP inputs: 6 individual single-character `TextInput` components, auto-advance on entry
 - Status animations: `pulseRedRing` (expanding ring, 1s) for Emergency; `pulseOrange` (opacity pulse, 2.4s) for Overdue
-- Bottom sheet (Add Device): use `react-native-bottom-sheet` or a custom Modal with slide-up animation
 - Emergency screen: full-screen red, no bottom navigation visible
 - Technician mode indicator: dark pill visible on MaintenanceDashboard header only
 - All datetime display: device locale format; store/send as ISO8601 UTC
@@ -302,88 +379,19 @@ Based on UX canvas artboard `project/DeviceDetail.dc.html`.
 
 ---
 
----
+## Recent Changes (2026-10-13)
 
-## BLE Device Provisioning (Technician Flow)
-
-Used by the **technician** role to set up a new FireEx device on-site via Bluetooth.
-
-### Library
-Use `react-native-ble-plx` (well-maintained, works on iOS + Android via Expo dev client).
-
-### BLE Constants
-```js
-const BLE_DEVICE_NAME   = "FireEx";
-const SERVICE_UUID      = "0000ABCD-0000-1000-8000-00805F9B34FB"; // full 128-bit form of "ABCD"
-const CHAR_UUID         = "00001234-0000-1000-8000-00805F9B34FB"; // full 128-bit form of "1234"
-```
-
-### Manufacturer Data — Reading Model Number
-During scan, each advertising packet contains manufacturer specific data:
-- Bytes 0–1: `0xFF 0xFF` (company ID — skip these)
-- Bytes 2–N: ASCII model number string e.g. `"FX-SD-100"`
-
-```js
-// Parse model number from scan result
-const mfrData = device.manufacturerData; // base64-encoded bytes
-const bytes = Buffer.from(mfrData, 'base64');
-const modelNumber = bytes.slice(2).toString('ascii'); // skip 2-byte company ID
-// Use modelNumber to fetch product config from server
-```
-
-### Full Provisioning Flow
-
-```
-1. Request BLE permissions (Android: BLUETOOTH_SCAN + BLUETOOTH_CONNECT; iOS: NSBluetoothAlwaysUsageDescription)
-2. Scan for devices named "FireEx"
-3. Read manufacturer data → extract model number (e.g. "FX-SD-100")
-4. Use model number → GET /api/products?model=FX-SD-100 → get product features
-5. GET /api/devices/provision → server assigns UDN for this installation
-6. Connect to device
-7. Request MTU = 512 (negotiate max before writing)
-8. Subscribe to notifications on CHAR_UUID
-9. Write "MODEL_NUMBER:" → wait for notify → verify response = "MODEL_NUMBER:FireEx"
-10. Build CONFIG payload (see format below)
-11. Write CONFIG payload as SINGLE write (MTU negotiated, fits in one packet)
-12. Wait for notify → verify response = "CONFIG:OK"
-13. Write "RESTART:" → wait for "RESTART:OK"
-14. Device reboots — provisioning complete
-15. POST /api/devices/:deviceId/activate to mark device as provisioned on backend
-```
-
-### CONFIG Payload Format (app → device)
-```
-CONFIG:{"udn":"FX00123","ssid":"WiFiName","pass":"WiFiPass","mqtt_host":"broker.fireex.in","mqtt_port":"1883","mqtt_topic":"FX00123","http_url":"https://api.fireex.in","show_serial":false}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `udn` | string | Unique Device Number from server |
-| `ssid` | string | Wi-Fi SSID for the installation site |
-| `pass` | string | Wi-Fi password |
-| `mqtt_host` | string | MQTT broker hostname |
-| `mqtt_port` | string | MQTT port e.g. `"1883"` |
-| `mqtt_topic` | string | MQTT base topic (usually same as UDN) |
-| `http_url` | string | Backend API base URL |
-| `show_serial` | boolean | `false` for production |
-
-> All values are strings **except** `show_serial` which is a JSON boolean (no quotes).
-
-### Other BLE Commands
-| Write | Expected notify response | Use |
-|-------|--------------------------|-----|
-| `MODEL_NUMBER:` | `MODEL_NUMBER:FireEx` | Verify correct device before provisioning |
-| `RESTART:` | `RESTART:OK` | Reboot device after provisioning |
-| `RESET:` | `RESET:OK` | Factory reset — clears all credentials |
-
-### Important Implementation Notes
-- Always request MTU 512 before writing CONFIG (`device.requestMTU(512)` in react-native-ble-plx)
-- Send CONFIG as a **single write** — do not chunk manually
-- If device disconnects mid-flow, restart from step 6 (re-connect) — the accumulation buffer on the device resets on disconnect
-- The device re-starts advertising automatically after disconnect so re-connection always works
-- GSM APN is **not** provisioned via BLE — the device reads it automatically from the SIM card
-
----
+✅ BLE Device Provisioning screen fully implemented (`/add-device`)
+✅ Real BLE scan + connect via `react-native-ble-plx` (no mock devices)
+✅ Model mismatch guard — reads manufacturer data, validates against ticket product
+✅ Full provisioning pipeline: scan → verify → wifi picker → register → CONFIG over BLE → restart
+✅ `POST /api/devices/register` wired with `{ productId, ticketId }` body
+✅ Redux store added (`ticketSlice`) to pass active ticket into add-device flow
+✅ `ticket-detail.tsx` dispatches `setActiveTicket` before navigating to add-device
+✅ `TicketDetail` type extended: `product: TicketDetailProduct`, `wifiNetworks: WifiNetwork[]`
+✅ `src/constants/mqtt.ts` added with MQTT broker config
+✅ `device-detail.tsx` "Set up device via BLE" button wired to `/add-device`
+✅ `RegisterDeviceRequest/Response` types added to `src/types/api.ts`
 
 ## Recent Changes (2026-10-12)
 
