@@ -4,7 +4,7 @@
 
 The firmware running on the ESP32 MCU inside each FireEx hardware unit. Responsible for reading sensors, controlling actuators, communicating with the backend via MQTT, and operating safely in isolation when the network is unavailable.
 
-**Status:** In progress (as of 2026-10-04)
+**Status:** In progress (as of 2026-10-13)
 **Repo:** `~/Documents/PlatformIO/Projects/fireex-firmware`
 **Platform:** ESP32-S3-WROOM-1 N16R8 (dual-core, 240MHz, 16MB flash, 8MB PSRAM) — both master and slave
 **Framework:** Arduino + PlatformIO
@@ -286,11 +286,20 @@ Format: JSON-over-UART at 115200 baud, newline-terminated messages.
 
 ### Master → Display (every 1 second)
 ```json
-{"t":"state","seq":1,"smoke":0.0,"temp":25.0,"hum":50.0,"alarm":false,
- "tubelight":false,"door_lock":true,"power_fan":false,
- "smoke_sensor":true,"buzzer":false,"solenoid":false}
+{"t":"state","seq":1,"smoke":0.0,"photo":0.0,"temp":25.0,"hum":50.0,
+ "alarm":false,"tubelight":false,"door_lock":true,"power_fan":false,
+ "buzzer":false,"exhaust_fan":false,"solenoid":false,
+ "batt_v":24.50,"batt_pct":85,"mains_v":230.0,"on_mains":true,"charging":false,
+ "wifi_connected":true,"wifi_rssi":-65,
+ "fw_ver":"1.0"}
 ```
-All 6 output states are included so the display can reflect live hardware state.
+All 6 output states, battery pack voltage/percent, mains voltage, WiFi status (connected + RSSI dBm), and firmware version are included.
+
+**Field notes:**
+- `smoke` — MQ2 percentage 0.0–100.0; `photo` — photoelectric sensor percentage
+- `batt_v` — pack voltage in volts (float, 2dp); `batt_pct` — 0–100 (linear 22V–25V)
+- `wifi_connected` — true if actively connected; `wifi_rssi` — dBm (e.g. -65), 0 when disconnected
+- No `co` field — CO sensor was removed; MQ2 covers smoke and combustible gases
 
 ### Display → Master (output toggle — immediate, on each toggle change)
 ```json
@@ -310,6 +319,16 @@ Sent immediately when a toggle is flipped on the Outputs screen — no Save requ
 {"t":"silence_request"}
 {"t":"test_alarm_request"}
 ```
+
+### Display → Master (factory reset commands)
+```json
+{"t":"cmd","action":"reset_settings"}
+{"t":"cmd","action":"reset_all"}
+```
+- `reset_settings` — resets runtime alarm thresholds to factory defaults; keeps NVS credentials (WiFi/MQTT/UDN). Master reboots.
+- `reset_all` — clears **all NVS credentials** (WiFi, MQTT, UDN) AND resets runtime settings. Device enters config/BLE mode on reboot.
+
+Both commands trigger `ESP.restart()` on master after applying changes.
 
 ### Master → Display (maintenance code response)
 ```json
@@ -333,6 +352,21 @@ Done once during installation by a technician using the mobile app.
 | Characteristic UUID | `"1234"` (16-bit short); READ + WRITE + NOTIFY |
 | Manufacturer data | `[0xFF, 0xFF] + "<model_number>"` e.g. `FF FF 46 58 2D 53 44 2D 31 30 30` = "FX-SD-100" |
 | Model number define | `BLE_MODEL_NUMBER "FX-SD-100"` |
+
+### WiFi Boot Progress UART Frames (master → slave display)
+During startup, master attempts WiFi connection and sends live progress frames so the display startup screen can show status:
+```json
+{"t":"wifi_status","state":"connecting","ssid":"MyNetwork"}
+{"t":"wifi_status","state":"connected","ssid":"MyNetwork","rssi":-65}
+{"t":"wifi_status","state":"failed","ssid":"MyNetwork"}
+{"t":"wifi_status","state":"skipped"}
+```
+- `connecting` — WiFi.begin() called, polling has started (15s timeout, 30×500ms)
+- `connected` — WiFi associated; `rssi` is the link quality in dBm
+- `failed` — timed out after 15s; device continues offline
+- `skipped` — no SSID stored (device still in config mode / not yet provisioned)
+
+The slave parses these into `FireExModel::WifiBootState` (Waiting → Connecting → Connected/Failed/Skipped) and drives the startup progress bar through 3 phases.
 
 ### BLE Setup Trigger
 - On boot: master reads NVS key `"udn"`. If empty → `g_config_mode = true` (BLE mode on demand)
@@ -374,6 +408,16 @@ CONFIG:{"udn":"FX00123","ssid":"WiFiName","pass":"WiFiPass","mqtt_host":"broker.
 
 ### Chunk Handling
 The `onWrite` callback uses an **accumulation buffer** (`std::string accum`). For `CONFIG:` commands it waits until the closing `}` is received before processing — handles cases where the phone splits the write across multiple BLE packets. Phone should still negotiate MTU ≥ 250 bytes and send as a single write for best reliability.
+
+### Slave NVS Namespaces (cleared on factory reset)
+| Namespace | Contents |
+|-----------|----------|
+| `alarm` | Alarm threshold settings (smoke %, temp, etc.) |
+| `power` | Power-related settings |
+| `display` | Display/UI preferences |
+| `session` | Session data including PIN (reset to default `1234`) |
+
+On `reset_settings` or `reset_all`, the slave clears all four namespaces via `Preferences::clear()` before rebooting itself.
 
 ### NVS Layout (master, namespace `"fireex"`)
 | Key | Type | Description |

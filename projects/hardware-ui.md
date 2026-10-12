@@ -4,8 +4,8 @@
 
 The display UI runs on a dedicated ESP32-S3 MCU inside the FireEx hardware unit. It drives a 5-inch 800×480 capacitive touch display using LVGL v8 over a 40-pin RGB parallel interface. The display shows live sensor data, device status, and active alerts — and provides a PIN-protected technician configuration screen.
 
-**Status:** In progress — hardware bring-up complete, full screen set implemented
-**Last updated:** 2026-10-06
+**Status:** In progress — hardware bring-up complete, full screen set implemented, WiFi boot progress + factory reset fully wired
+**Last updated:** 2026-10-13
 **Repo:** `fireex-firmware` (PlatformIO project at `~/Documents/PlatformIO/Projects/fireex-firmware`, env: `slave`)
 **Platform:** ESP32-S3
 **Framework:** Arduino + PlatformIO
@@ -100,7 +100,7 @@ fireex-firmware/src/slave/
       scr_about.cpp/.h           ← Device info (FW/UI versions, MAC, device ID)
       scr_placeholder.cpp/.h     ← Generic "Coming soon" for unbuilt tiles
     widgets/
-      status_bar.cpp/.h      ← Top bar (WiFi%, GSM%, BLE dot, battery%, time)
+      status_bar.cpp/.h      ← Top bar (WiFi icon, GSM%, BLE dot, mains/battery status, battery%); refreshes every 1s from g_model
       keypad.cpp/.h          ← Reusable numeric keypad widget
       onoff_toggle.cpp/.h    ← Labelled on/off toggle widget
       toast.cpp/.h           ← Transient toast notification widget
@@ -119,8 +119,24 @@ fireex-firmware/src/slave/
 
 > All screens below are **implemented** (files exist in `src/ui/screens/`). Screen navigation uses `ScreenManager::navigate_to(ScreenId)` with create-on-enter / destroy-on-leave lifecycle.
 
-### Startup (`scr_startup`) — ✅ Built
-Boot splash. Auto-advances to Home after a fixed duration. Never navigable to directly via `navigate_to()`.
+### Startup (`scr_startup`) — ✅ Built (fully wired to UART boot frames)
+Boot splash with a 3-phase progress bar driven by UART frames from master. Never navigable to directly via `navigate_to()`.
+
+**Phase 0 (0–40%)** — Waiting for `boot_info` frame from master (controller link established).
+- Bar animates slowly to 38% while waiting. Watchdog: 10s.
+- On `boot_info` received: jumps to 40%, shows "Controller linked. Connecting to Wi-Fi..."
+- On 10s timeout: shows "Controller not found — check cable." and advances anyway.
+
+**Phase 1 (40–80%)** — Waiting for `wifi_status` frame from master.
+- Bar animates to 78% while waiting. Watchdog: 10s.
+- On `connected`: shows Wi-Fi symbol + "Wi-Fi connected. Ready."
+- On `failed`: shows warning symbol + "Wi-Fi failed — continuing offline."
+- On `skipped`: shows "Wi-Fi skipped (device not provisioned)."
+- Jumps bar to 100%.
+
+**Phase 2 (hold)** — 800ms pause at 100%, then navigates:
+- If PIN is set (not first run) → `scr_pin`
+- If first run → `on_done` callback (→ Home)
 
 ---
 
@@ -234,8 +250,15 @@ Paginated table of device events (alarm, power, output changes, mode changes, on
 - **Data source:** Fetched from `GET /api/devices/:id/logs`. The screen checks `g_model.logs_ready`; while `false` it shows a spinner + "Fetching data..." overlay inside the table container. Once logs are parsed into the model and `logs_ready` is set to `true`, the screen re-renders with data on next open.
 - Currently shows mock data in the simulator (`logs_ready = false` by default, `true` must be set explicitly to show data).
 
-### Factory Reset (`scr_factory_reset`) — ✅ Built
-PIN-gated via `navigate_to_pin()`. Clears NVS config and reboots. Located in the **HARDWARE** group on the menu.
+### Factory Reset (`scr_factory_reset`) — ✅ Built (fully wired)
+Located in the **HARDWARE** group on the menu. Two radio-option reset modes:
+
+| Option | Action |
+|--------|--------|
+| **Settings only** | Clears slave NVS namespaces (`alarm`, `power`, `display`, `session`). Sends `{"t":"cmd","action":"reset_settings"}` to master — master resets runtime thresholds, keeps WiFi/MQTT credentials. Both boards reboot. |
+| **Everything** | Same slave NVS clear + sends `{"t":"cmd","action":"reset_all"}` to master — master also clears all credentials. Device returns to config/BLE mode after reboot. |
+
+A modal confirmation popup with a warning icon and "Yes, reset" / "No, cancel" buttons is shown before executing either mode. The popup blocks the screen behind it (dim overlay). PIN is **not** required (factory reset is in the menu, which is already session-protected).
 
 ### Device Update (`scr_device_update`) — ✅ Built
 Located in the **USER** group. Checks for OTA firmware updates. Three UI states driven by `g_model.update_state` (`FireExModel::UpdateState` enum):
@@ -297,18 +320,37 @@ LVGL tick: `lv_timer_handler()` called every 5ms in `loop()`. No separate 1ms IS
 
 ## UART Communication with Firmware MCU
 
-**Status (Milestone 1):** GPIO pins reserved (TX=GPIO4, RX=GPIO5) but UART protocol not wired yet. `g_model` uses hardcoded defaults. See `projects/hardware-firmware.md` for the full protocol.
+**Status:** UART fully wired — both directions active. `g_model` is updated live from every master state frame. See `projects/hardware-firmware.md` for the complete protocol reference.
 
-**Planned receive (from firmware, every 1 second):**
+**Receive (from master, every 1 second):**
 ```json
-{"t":"state","smoke":0.12,"temp":23.5,"hum":52.0,"status":"online","alarm":false,"fan_pct":0}
+{"t":"state","seq":N,"smoke":0.0,"photo":0.0,"temp":25.0,"hum":50.0,
+ "alarm":false,"tubelight":false,"door_lock":true,"power_fan":false,
+ "buzzer":false,"exhaust_fan":false,"solenoid":false,
+ "batt_v":24.50,"batt_pct":85,"mains_v":230.0,"on_mains":true,"charging":false,
+ "wifi_connected":true,"wifi_rssi":-65,
+ "fw_ver":"1.0"}
 ```
 
-**Planned send (from UI to firmware, on user action):**
+**Also received at boot (one-shot frames):**
+```json
+{"t":"boot_info","udn":"FX00123","ssid":"WiFiName",...}
+{"t":"wifi_status","state":"connecting","ssid":"WiFiName"}
+{"t":"wifi_status","state":"connected","ssid":"WiFiName","rssi":-65}
+{"t":"wifi_status","state":"failed","ssid":"WiFiName"}
+{"t":"wifi_status","state":"skipped"}
+```
+
+**Send (from slave to master, on user action):**
 ```json
 {"t":"silence_request"}
 {"t":"test_alarm_request"}
 {"t":"maintenance_code","code":"482193"}
+{"t":"output","action":"power_fan","value":true}
+{"t":"cmd","action":"reset_settings"}
+{"t":"cmd","action":"reset_all"}
+{"t":"cmd","action":"ble_start"}
+{"t":"alarm_thresholds","mq2_alert_pct":30,"mq2_panic_pct":60,...}
 ```
 
 **Planned receive response (firmware → UI):**
